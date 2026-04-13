@@ -66,6 +66,16 @@
      
      ,@body))
 
+;;; Messages setup to test logging
+(defmacro with-captured-messages (var-name &rest body)
+  "Execute BODY and gets all `message'-calls in the List VAR-NAME.  The messages are stored in order of printing."
+  (declare (indent 1) (debug t))
+  `(let ((,var-name '()))
+     (cl-letf (((symbol-function 'message)
+                (lambda (fmt &rest args)
+                  (setq ,var-name (append ,var-name (list (apply #'format fmt args)))))))
+       ,@body)))
+
 ;; org-grimoire--config-get
 
 (ert-deftest ogt-config-get-existing ()
@@ -103,7 +113,118 @@
   (with-grimoire-fixture "not-an-grimoire-folder"
   (should-error (org-grimoire--load-config) :type 'user-error)))
 
+;; Logging stuff
 
+(ert-deftest ogt-log-reset-successfull ()
+  "Test that `org-grimoire--log-reset' does what it is supposed to do."
+  (setq org-grimoire--log '((:info . "Old info message") (:error . "Old error")))
+
+  (org-grimoire--log-reset)
+
+  (should (equal org-grimoire--log nil)))
+
+(ert-deftest ogt-log-info ()
+  "Test that the function `org-grimoire--log' correctly logs infos."
+  (setq org-grimoire--log nil)
+
+  (with-captured-messages messages
+    (let ((info-text "Found 3 files."))
+    (org-grimoire--log :info info-text)
+    (should (equal (nth 0 messages) (format "[INFO] %s" info-text)))
+    (should (equal org-grimoire--log `((:info . ,info-text)))))))
+
+(ert-deftest ogt-log-warning ()
+  "Test that the function `org-grimoire--log' correctly logs warnings."
+  (setq org-grimoire--log nil)
+
+  (with-captured-messages messages
+    (let ((warn-text "Missing tag."))
+    (org-grimoire--log :warn warn-text)
+    (should (equal (nth 0 messages) (format "[WARN] %s" warn-text)))
+    (should (equal org-grimoire--log `((:warn . ,warn-text)))))))
+
+(ert-deftest ogt-log-error ()
+  "Test that the function `org-grimoire--log' correctly logs errors."
+  (setq org-grimoire--log nil)
+
+  (with-captured-messages messages
+    (let ((error-text "Template not found!"))
+    (org-grimoire--log :error error-text)
+    (should (equal (nth 0 messages) (format "[ERROR] %s" error-text)))
+    (should (equal org-grimoire--log `((:error . ,error-text)))))))
+
+(ert-deftest ogt-log-append ()
+  "Test that the function `org-grimoire--log' correctly appends additional messages."
+  (setq org-grimoire--log nil)
+
+  (with-captured-messages messages
+    (let ((info-text "Found 3 files.")
+          (info-text2 "Found 4 static files.")
+          (warn-text "Missing tag.")
+          )
+      (org-grimoire--log :info info-text)
+      (org-grimoire--log :info info-text2)
+      (org-grimoire--log :warn warn-text)
+      
+      (should (equal (nth 0 messages) (format "[INFO] %s" info-text)))
+      (should (equal (nth 1 messages) (format "[INFO] %s" info-text2)))
+      (should (equal (nth 2 messages) (format "[WARN] %s" warn-text)))
+      (should (equal org-grimoire--log `((:warn . ,warn-text)
+                                         (:info . ,info-text2)
+                                         (:info . ,info-text)))))))
+
+(ert-deftest ogt-log-summary-no-warn-error ()
+  "Test that `org-grimoire--log-summary' correctly outputs when there are no errors or warnings."
+  (setq org-grimoire--log nil)
+  (org-grimoire--log :info "Just some normal info.")
+  
+  (with-captured-messages messages
+    (org-grimoire--log-summary)
+    
+    (should (= (length messages) 1))
+    (should (equal (car messages) "Build completed with no warnings or errors."))))
+
+(ert-deftest ogt-log-summary-with-warn ()
+  "Test that `org-grimoire--log-summary' shows errors or warnings if they are present."
+  (setq org-grimoire--log nil)
+  (org-grimoire--log :warn "Missing tag")
+  
+  (with-captured-messages messages
+    (org-grimoire--log-summary)
+    
+    (should (= (length messages) 3))
+    (should (equal (nth 0 messages) "--- Build Summary ---"))
+    (should (equal (nth 1 messages) "  [WARN ] Missing tag"))
+    (should (equal (nth 2 messages) "  1 warning(s), 0 error(s)."))))
+
+(ert-deftest ogt-log-summary-with-error ()
+  "Test that `org-grimoire--log-summary' shows errors or warnings if they are present."
+  (org-grimoire--log-reset)
+  (org-grimoire--log :error "Failed to render")
+  
+  (with-captured-messages messages
+    (org-grimoire--log-summary)
+    
+    (should (= (length messages) 3))
+    (should (equal (nth 0 messages) "--- Build Summary ---"))
+    (should (equal (nth 1 messages) "  [ERROR] Failed to render"))
+    (should (equal (nth 2 messages) "  0 warning(s), 1 error(s)."))))
+
+(ert-deftest ogt-log-summary-with-warn-error ()
+  "Test that `org-grimoire--log-summary' shows errors or warnings if they are present."
+  (org-grimoire--log-reset)
+  (org-grimoire--log :info "Start")
+  (org-grimoire--log :warn "Missing tag")
+  (org-grimoire--log :error "Failed to render")
+  
+  (with-captured-messages messages
+    (org-grimoire--log-summary)
+    
+    (should (= (length messages) 4))
+    (should (equal (nth 0 messages) "--- Build Summary ---"))
+    (should (equal (nth 1 messages) "  [WARN ] Missing tag"))
+    (should (equal (nth 2 messages) "  [ERROR] Failed to render"))
+    (should (equal (nth 3 messages) "  1 warning(s), 1 error(s)."))))
 
 (provide 'org-grimoire-test)
 ;;; org-grimoire-test.el ends here

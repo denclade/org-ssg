@@ -118,8 +118,8 @@ LEVEL must be :info, :warn, or :error."
   (push (cons level msg) org-grimoire--log)
   (message "[%s] %s"
            (pcase level
-             (:info  "INFO ")
-             (:warn  "WARN ")
+             (:info  "INFO")
+             (:warn  "WARN")
              (:error "ERROR"))
            msg))
 
