@@ -63,12 +63,12 @@
 
 ;;; Internal State:
 
-(defvar org-grimoire--sites (make-hash-table :test 'equal)
-  "Hash table of named site configurations.")
+(defvar org-grimoire--config nil
+  "The configuration plist for the currently executing command.
+Bound dynamically; do not set this globally.")
 
-(defvar org-grimoire--current-site nil
-  "Name of the site currently being built.
-Bound dynamically by `org-grimoire-build'; do not set this directly.")
+(defvar org-grimoire-config-file ".grimoire.el"
+  "Name of the project-local configuration file.")
 
 (defvar org-grimoire--package-dir
   (file-name-directory (or load-file-name
@@ -77,9 +77,29 @@ Bound dynamically by `org-grimoire-build'; do not set this directly.")
                            buffer-file-name))
   "Directory containing org-grimoire.el.")
 
+;;; Configuration
+
 (defun org-grimoire--config-get (key)
-  "Return the value of KEY from the current site configuration."
-  (plist-get (gethash org-grimoire--current-site org-grimoire--sites) key))
+  "Return the value of KEY from the dynamically bound configuration.
+Throws an error if the configuration is not loaded."
+  (unless org-grimoire--config
+    (error "The org-grimoire config is not loaded.  Call this inside a valid context!"))
+  (plist-get org-grimoire--config key))
+
+(defun org-grimoire--load-config ()
+  "Locate, read, and resolve the project-local config."
+  (let ((root (locate-dominating-file default-directory org-grimoire-config-file)))
+    (unless root
+      (user-error "No %s found in current or parent directories" org-grimoire-config-file))
+    (let* ((config-file (expand-file-name org-grimoire-config-file root))
+           (base-dir    (file-name-directory config-file))
+           (config      (with-temp-buffer
+                          (insert-file-contents config-file)
+                          (goto-char (point-min))
+                          (read (current-buffer)))))
+      (unless (listp config)
+        (user-error "Config file %s must contain a valid property list (plist)" config-file))
+      (org-grimoire--resolve-config (plist-put config :base-dir base-dir)))))
 
 ;;; Build Logger:
 
@@ -777,53 +797,41 @@ Resolve :theme relative to the themes/ subdirectory of :base-dir."
       (user-error ":per-page must be a positive integer"))))
 
 ;;;###autoload
-(defun org-grimoire-setup (name &rest args)
-  "Register a site configuration NAME with ARGS.
-Required keys: :base-dir, :base-url, :site-title.
-Optional keys: :description, :author, :theme, :per-page, :reading-time.
-Optional path overrides: :source, :output, :static."
-  (puthash name (org-grimoire--resolve-config args) org-grimoire--sites))
+(defun org-grimoire-build ()
+  "Build the site for the project in the current directory."
+  (interactive)
+  (let ((org-grimoire--config (org-grimoire--load-config)))
+    (org-grimoire--log-reset)
+    (org-grimoire--validate-config org-grimoire--config)
+    (let ((source    (org-grimoire--config-get :source))
+          (output    (org-grimoire--config-get :output))
+          (static    (org-grimoire--config-get :static))
+          (theme-dir (org-grimoire--config-get :theme)))
+      (org-grimoire--log :info "Build started")
+      (org-grimoire--log :info (format "Source: %s" source))
+      (org-grimoire--log :info (format "Output: %s" output))
+      (condition-case err
+          (let ((posts (org-grimoire--collect source output)))
+            (org-grimoire--log :info (format "Collected %d post(s)." (length posts)))
+            (org-grimoire--copy-static static (expand-file-name "static" output))
+            (org-grimoire--copy-theme-static output theme-dir)
+            (org-grimoire--render-all posts)
+            (org-grimoire--generate-index posts output)
+            (org-grimoire--generate-tags posts output)
+            (org-grimoire--generate-feeds posts output)
+            (org-grimoire--generate-sitemap posts output)
+            (org-grimoire--log :info "Build complete.")
+            (org-grimoire--log-summary))
+        (error
+         (org-grimoire--log :error (error-message-string err))
+         (org-grimoire--log-summary))))))
 
 ;;;###autoload
-(defun org-grimoire-build (name)
-  "Build the site registered as NAME."
-  (interactive
-   (list (completing-read "Site: " (hash-table-keys org-grimoire--sites) nil t)))
-  (org-grimoire--log-reset)
-  (unless (gethash name org-grimoire--sites)
-    (user-error "No site configured with name: %s" name))
-  (let* ((org-grimoire--current-site name)
-         (source    (org-grimoire--config-get :source))
-         (output    (org-grimoire--config-get :output))
-         (static    (org-grimoire--config-get :static))
-         (theme-dir (org-grimoire--config-get :theme)))
-    (org-grimoire--validate-config (gethash name org-grimoire--sites))
-    (org-grimoire--log :info "Build started")
-    (org-grimoire--log :info (format "Source: %s" source))
-    (org-grimoire--log :info (format "Output: %s" output))
-    (condition-case err
-        (let ((posts (org-grimoire--collect source output)))
-          (org-grimoire--log :info (format "Collected %d post(s)." (length posts)))
-          (org-grimoire--copy-static static (expand-file-name "static" output))
-          (org-grimoire--copy-theme-static output theme-dir)
-          (org-grimoire--render-all posts)
-          (org-grimoire--generate-index posts output)
-          (org-grimoire--generate-tags posts output)
-          (org-grimoire--generate-feeds posts output)
-          (org-grimoire--generate-sitemap posts output)
-          (org-grimoire--log :info "Build complete.")
-          (org-grimoire--log-summary))
-      (error
-       (org-grimoire--log :error (error-message-string err))
-       (org-grimoire--log-summary)))))
-
-;;;###autoload
-(defun org-grimoire-new (name)
-  "Interactively create a new post for the site registered as NAME."
-  (interactive "sSite name: ")
-  (let* ((config (or (gethash name org-grimoire--sites)
-                     (user-error "No site configured with name: %s" name)))
-         (source (plist-get config :source))
+(defun org-grimoire-new ()
+  "Interactively create a new post for the project in the current directory."
+  (interactive)
+  (let* ((org-grimoire--config (org-grimoire--load-config))
+         (source (org-grimoire--config-get :source))
          (dirs   (cl-remove-if-not #'file-directory-p
                                    (directory-files source t "^[^.]")))
          (types  (mapcar #'file-name-nondirectory dirs))
@@ -842,46 +850,47 @@ Optional path overrides: :source, :output, :static."
     (find-file file)))
 
 ;;;###autoload
-(defun org-grimoire-init (name base-dir base-url)
-  "Initialize a new org-grimoire site NAME at BASE-DIR with BASE-URL."
-  (interactive
-   (list (read-string "Site name: ")
-         (read-directory-name "Base directory: ")
-         (read-string "Base URL (e.g. https://example.com): ")))
-  (let* ((base    (expand-file-name base-dir))
-         (content (expand-file-name "content" base))
-         (posts   (expand-file-name "post" content))
-         (pages   (expand-file-name "page" content))
-         (static  (expand-file-name "static" base)))
-    (dolist (dir (list base content posts pages static))
-      (make-directory dir t))
-        (write-region
-        (concat "#+TITLE: My First Post\n"
-                "#+DATE: " (format-time-string "%F") "\n"
-                "#+TAGS: emacs\n"
-                "#+DRAFT: false\n\n"
-                "Hello, world!\n")
-        nil (expand-file-name "my-first-post.org" posts))
-    (write-region
-     "#+TITLE: About\n#+LISTED: false\n\nThis is the about page.\n"
-     nil (expand-file-name "about.org" pages))
-        (message "Done! Add this to your Emacs config:\n\n%s"
-                (format
-                 "(org-grimoire-setup \"%s\"\n  :base-dir    \"%s\"\n  :base-url    \"%s\"\n  :site-title  \"%s\"\n  :description \"My site\")\n"
-                 name base base-url name))))
-
-;;;###autoload
-(defun org-grimoire-serve (name)
-  "Serve the built site for NAME using simple-httpd if available."
-  (interactive
-   (list (completing-read "Site:" (hash-table-keys org-grimoire--sites) nil t)))
+(defun org-grimoire-serve ()
+  "Serve the built site for the project in the current directory."
+  (interactive)
   (if (not (require 'simple-httpd nil t))
       (user-error "Simple-httpd is not installed")
-    (let* ((config (or (gethash name org-grimoire--sites)
-                       (user-error "No site configured with name: %s" name)))
-           (output (plist-get config :output)))
+    (let* ((org-grimoire--config (org-grimoire--load-config))
+           (output (org-grimoire--config-get :output)))
       (setq httpd-root output)
       (httpd-start)
       (message "Serving %s at http://localhost:%d" output httpd-port))))
+
+;;;###autoload
+(defun org-grimoire-init (base-dir base-url site-title)
+  "Initialize a new org-grimoire site at BASE-DIR with BASE-URL & site-title."
+  (interactive
+   (list (read-directory-name "Base directory: ")
+         (read-string "Base URL (e.g. https://example.com): ")
+         (read-string "Site Title: ")))
+  (let* ((base        (expand-file-name base-dir))
+         (content     (expand-file-name "content" base))
+         (posts       (expand-file-name "post" content))
+         (pages       (expand-file-name "page" content))
+         (static      (expand-file-name "static" base))
+         (config-file (expand-file-name org-grimoire-config-file base)))
+    (dolist (dir (list base content posts pages static))
+      (make-directory dir t))
+    (write-region
+     (format "(:site-title  \"%s\"\n :base-url    \"%s\"\n :description \"A fresh org-grimoire site\"\n :theme       \"default\"\n :per-page    10)\n"
+             site-title base-url)
+     nil config-file)
+    (write-region
+     (concat "#+TITLE: My First Post\n"
+             "#+DATE: " (format-time-string "%F") "\n"
+             "#+TAGS: emacs\n"
+             "#+DRAFT: false\n\n"
+             "Hello, world!\n")
+     nil (expand-file-name "my-first-post.org" posts))
+    (write-region
+     "#+TITLE: About\n#+LISTED: false\n\nThis is the about page.\n"
+     nil (expand-file-name "about.org" pages))
+    (message "Done! Initialized org-grimoire project at %s" base)))
+
 (provide 'org-grimoire)
 ;;; org-grimoire.el ends here
