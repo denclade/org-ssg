@@ -141,13 +141,18 @@ LEVEL must be :info, :warn, or :error."
 ;;; Template Engine:
 
 (defun org-grimoire--default-theme-dir ()
-  "Return the path to the built-in default theme."
-  (expand-file-name "themes/default/" org-grimoire--package-dir))
+  "Return the path to the default theme.  Read :default-theme-dir from config, falling back to the built-in default."
+  (let ((custom-default (org-grimoire--config-get :default-theme-dir)))
+    (if custom-default
+        (expand-file-name custom-default (org-grimoire--config-get :base-dir))
+      (expand-file-name "themes/default/" org-grimoire--package-dir))))
 
 (defun org-grimoire--resolve-theme-file (filename theme-dir)
   "Return the absolute path to FILENAME, searching THEME-DIR.
-Then the default theme.
- Return nil when FILENAME is not found in either location."
+Then the default theme.  Enables the developer to create child themes,
+which do not have to override all theme files.  Files not overwritten
+are taken from the default theme.
+Return nil when FILENAME is not found in either location."
   (let ((user-path    (when theme-dir (expand-file-name filename theme-dir)))
         (default-path (expand-file-name filename
                                         (org-grimoire--default-theme-dir))))
@@ -157,26 +162,30 @@ Then the default theme.
 
 (defun org-grimoire--load-template (name theme-dir)
   "Return the contents of template NAME.html, resolved via THEME-DIR.
-Fall back to the built-in default theme.  Signal a user error when not found."
-  (let* ((resolved (org-grimoire--resolve-theme-file
-                    (concat name ".html") theme-dir))
-       (path     (or resolved (user-error "Template not found: %s" name))))
-  (with-temp-buffer
-      (insert-file-contents path)
-      (buffer-string))))
+Fall back to the default theme.  Logs an error and returns the original placeholder if not found."
+  (let ((resolved (org-grimoire--resolve-theme-file (concat name ".html") theme-dir)))
+    (if resolved
+        (with-temp-buffer
+          (insert-file-contents resolved)
+          (buffer-string))
+      (org-grimoire--log :error (format "Template not found: %s.html" name))
+      (format "<!-- Template not found: %s.html -->" name))))
 
 (defun org-grimoire--process-includes (template theme-dir)
   "Replace {{include file.html}} directives in TEMPLATE with file contents.
-Search THEME-DIR first, then fall back to the built-in default theme."
+Searches THEME-DIR fist, falls back to default-theme if not found.
+Logs an error and inserts an HTML comment if the file is missing."
   (replace-regexp-in-string
    "{{include \\([^}]+\\)}}"
    (lambda (match)
      (let* ((filename (match-string 1 match))
-            (path     (or (org-grimoire--resolve-theme-file filename theme-dir)
-                          (user-error "Include not found: %s" filename))))
-       (with-temp-buffer
-         (insert-file-contents path)
-         (buffer-string))))
+            (resolved (org-grimoire--resolve-theme-file filename theme-dir)))
+       (if resolved
+           (with-temp-buffer
+             (insert-file-contents resolved)
+             (buffer-string))
+         (org-grimoire--log :error (format "Include not found: %s" filename))
+         (format "" filename))))
    template))
 
 (defun org-grimoire--render-template (template vars theme-dir)

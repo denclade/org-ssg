@@ -226,5 +226,99 @@
     (should (equal (nth 2 messages) "  [ERROR] Failed to render"))
     (should (equal (nth 3 messages) "  1 warning(s), 1 error(s)."))))
 
+;; Templates
+(ert-deftest ogt-default-theme-dir ()
+  "Test that `org-grimoire--default-theme-dir' points to the correct theme dir (with and without cfg override)."
+  (with-grimoire-fixture "template-site"
+    (let ((org-grimoire--package-dir (expand-file-name "../" org-grimoire-test-base-dir))
+          (org-grimoire--config (list :base-dir default-directory)))
+      
+      (should (string-suffix-p "themes/default/" (org-grimoire--default-theme-dir)))
+      
+      (let ((org-grimoire--config (plist-put org-grimoire--config :default-theme-dir "my-base/")))
+        (should (string-suffix-p "template-site/my-base/" (org-grimoire--default-theme-dir)))))))
+
+(ert-deftest ogt-resolve-theme-file-test ()
+  "Test that `org-grimoire--resolve-theme-file' returns the correct child or default theme file."
+  (with-grimoire-fixture "template-site"
+    (let ((org-grimoire--package-dir (expand-file-name "../" org-grimoire-test-base-dir))
+          (user-theme (expand-file-name "themes/custom-theme/" default-directory))
+          (org-grimoire--config (list :base-dir default-directory)))
+      
+      ;; Returns a user theme file
+      (should (string-prefix-p user-theme (org-grimoire--resolve-theme-file "post.html" user-theme)))
+      
+      ;; Returns a default theme file if file is not present in user theme.
+      (should (string-match-p "themes/default/tags.html$" (org-grimoire--resolve-theme-file "tags.html" nil)))
+      
+      ;; File does not exist.
+      (should (equal nil (org-grimoire--resolve-theme-file "missing.html" user-theme))))))
+
+(ert-deftest ogt-load-template-test ()
+  "Test that `org-grimoire--load-template' correctly loads a template and throws an error if the template does not exist."
+  (with-grimoire-fixture "template-site"
+    (let ((org-grimoire--package-dir (expand-file-name "../" org-grimoire-test-base-dir))
+          (user-theme (expand-file-name "themes/custom-theme/" default-directory))
+          (org-grimoire--config (list :base-dir default-directory)))
+      
+      (should (equal "<h1>Index</h1>" (string-trim (org-grimoire--load-template "index" user-theme))))
+
+      ;; error case - template does not exist
+      (org-grimoire--log-reset)
+      (with-captured-messages messages
+        (let ((result (org-grimoire--load-template "not-existing-template" user-theme)))
+          (should (equal result "<!-- Template not found: not-existing-template.html -->"))
+          (should (equal org-grimoire--log '((:error . "Template not found: not-existing-template.html"))))
+          (should (equal (nth 0 messages) "[ERROR] Template not found: not-existing-template.html")))))))
+
+(ert-deftest ogt-process-includes ()
+  "Tests that `org-grimoire--process-includes' correctly includes file content in another file."
+  (with-grimoire-fixture "template-site"
+    (let ((org-grimoire--package-dir (expand-file-name "../" org-grimoire-test-base-dir))
+          (user-theme (expand-file-name "themes/custom-theme/" default-directory))
+          (org-grimoire--config (list :base-dir default-directory)))
+      
+      ;; include an existing file
+      (let* ((template "Before -> {{include post.html}} <- After")
+             (result (org-grimoire--process-includes template user-theme)))
+        (should (string-match-p "<- After" result))
+        (should-not (string-match-p "{{include" result)))
+      
+      ;; missing Include
+      (org-grimoire--log-reset)
+      (with-captured-messages messages
+        (let* ((template "Header {{include missing.html}} Footer")
+               (result (org-grimoire--process-includes template user-theme)))
+          
+          (should (equal result "Header  Footer"))
+          (should (equal (nth 0 messages) "[ERROR] Include not found: missing.html"))
+          (should (equal org-grimoire--log '((:error . "Include not found: missing.html")))))))))
+
+(ert-deftest ogt-render-template ()
+  "Tests that `org-grimoire--render-template' correctly replaces {{variable}}."
+  (with-grimoire-fixture "template-site"
+    (let ((org-grimoire--package-dir (expand-file-name "../" org-grimoire-test-base-dir))
+          (user-theme (expand-file-name "themes/custom-theme/" default-directory))
+          (template "<h1>{{title}}</h1><p>{{content}}</p>")
+          (vars '(:title "Test" :content "Inhalt"))
+          (org-grimoire--config (list :base-dir default-directory)))
+      
+      (should (equal (org-grimoire--render-template template vars user-theme)
+                     "<h1>Test</h1><p>Inhalt</p>")))))
+
+(ert-deftest ogt-wrap-base ()
+  "Tests that `org-grimoire--wrap-base' correctly loads the base template theme."
+  (with-grimoire-fixture "template-site"
+    (let* ((org-grimoire--package-dir (expand-file-name "../" org-grimoire-test-base-dir))
+           (user-theme (expand-file-name "themes/custom-theme/" default-directory))
+           (org-grimoire--config (list :base-dir default-directory
+                                       :site-title "Test Site"
+                                       :base-url "https://test.com"
+                                       :theme user-theme)))
+      
+      (let ((result (org-grimoire--wrap-base "<p>Post</p>" "Mein Post")))
+        (should (string-match-p "Mein Post" result))
+        (should (string-match-p "<p>Post</p>" result))))))
+
 (provide 'org-grimoire-test)
 ;;; org-grimoire-test.el ends here
