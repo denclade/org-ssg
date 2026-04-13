@@ -320,5 +320,37 @@
         (should (string-match-p "Mein Post" result))
         (should (string-match-p "<p>Post</p>" result))))))
 
+(ert-deftest ogt-wrap-base-custom-vars-test ()
+  "Tests that `org-grimoire--wrap-base' correctly inserts custom variables."
+  (let ((org-grimoire--config (list :site-title "My Blog"
+                                    :theme "dummy-theme"
+                                    :my-custom-global "Global variable")))
+    
+    (cl-letf (((symbol-function 'org-grimoire--load-template)
+               (lambda (_name _theme)
+                 "<body>{{content}} | {{my-custom-global}} | {{page-var}}</body>")))
+      
+      (let* ((extra-vars '(:page-var "local variable"))
+             (result (org-grimoire--wrap-base "Text" "Titel" nil extra-vars)))
+        
+        (should (string-match-p "Text | global variable | local variable" result))))))
+
+(ert-deftest ogt-wrap-base-title-test ()
+  "Tests that `org-grimoire--wrap-base' correctly sets the site-title & a custom title."
+  (let ((org-grimoire--config (list :site-title "My Blog"
+                                    :theme "dummy-theme")))
+    
+    ;; simulate an empty template with just title stuff
+    (cl-letf (((symbol-function 'org-grimoire--load-template)
+               (lambda (_name _theme)
+                 "<head><title>{{site-title}} :: {{title}}</title></head><body>{{content}}</body>")))
+      
+      (let* ((test-title "Emacs SSG!")
+             (test-text "<p>My text about emacs SSG.</p>")
+             (result (org-grimoire--wrap-base test-text test-title)))
+        
+        (should (string-match-p (format "<title>My Blog :: %s</title>" test-title) result))
+        (should (string-match-p (format "<body>%s</body>" test-text) result))))))
+
 (provide 'org-grimoire-test)
 ;;; org-grimoire-test.el ends here

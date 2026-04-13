@@ -200,20 +200,21 @@ Process {{include}} directives first using THEME-DIR."
              result t t)))
     result))
 
-(defun org-grimoire--wrap-base (content title &optional url)
-  "Return CONTENT wrapped in the base template, substituting TITLE.
-URL is used to fill the {{url}} placeholder; it defaults to an empty string."
+(defun org-grimoire--wrap-base (content title &optional url extra-vars)
+  "Return CONTENT wrapped in the base template.
+TITLE and URL are used to fill {{title}} and {{url}}.
+EXTRA-VARS is an optional plist of additional custom variables.
+All global configuration variables are also available in the template."
   (let* ((theme-dir (org-grimoire--config-get :theme))
-         (base      (org-grimoire--load-template "base" theme-dir)))
-    (org-grimoire--render-template base
-      (list :title       title
-            :site-title  (org-grimoire--config-get :site-title)
-            :description (org-grimoire--config-get :description)
-            :author      (org-grimoire--config-get :author)
-            :base-url    (org-grimoire--config-get :base-url)
-            :url         (or url "")
-            :content     content)
-      theme-dir)))
+         (base      (org-grimoire--load-template "base" theme-dir))
+         
+         (all-vars (append (list :content content
+                                 :title title
+                                 :url (or url ""))
+                           extra-vars
+                           org-grimoire--config)))
+    
+    (org-grimoire--render-template base all-vars theme-dir)))
 
 ;;; File Utilities:
 
