@@ -32,6 +32,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'el-mock)
 (require 'org-grimoire
          (expand-file-name "org-grimoire.el"
                            (file-name-directory (or load-file-name buffer-file-name))))
@@ -39,26 +40,26 @@
 ;; Dummy data
 
 (defconst ogt--test-dummy-config
-  '(:site-title "Test Blog" :per-page 10)
+  '(:site-title "My Blog" :per-page 10)
   "Dummy configuration data for running tests.")
 
-(defmacro with-grimoire-test-config (&rest body)
+(defmacro with-ogt-config (&rest body)
   "Evaluate BODY with `org-grimoire--config' bound to dummy data."
   (declare (indent 0) (debug t))
-  `(let ((org-grimoire--config ogt--test-dummy-config))
+  `(let ((org-grimoire--config (copy-sequence ogt--test-dummy-config)))
      ,@body))
 
 ;;; Fixture Setup:
 
-(defvar org-grimoire-test-base-dir
+(defvar ogt-base-dir
   (file-name-directory (or load-file-name buffer-file-name))
   "The base directory in which the tests are executed.")
 
-(defmacro with-grimoire-fixture (fixture-name &rest body)
+(defmacro with-ogt-fixture (fixture-name &rest body)
   "Execute BODY, the working directory is set to FIXTURE-NAME."
   (declare (indent 1) (debug t))
   `(let* ((fixture-dir (expand-file-name (concat "fixtures/" ,fixture-name "/")
-                                         org-grimoire-test-base-dir))
+                                         ogt-base-dir))
           (default-directory fixture-dir))
      
      (unless (file-directory-p fixture-dir)
@@ -68,7 +69,8 @@
 
 ;;; Messages setup to test logging
 (defmacro with-captured-messages (var-name &rest body)
-  "Execute BODY and gets all `message'-calls in the List VAR-NAME.  The messages are stored in order of printing."
+  "Execute BODY and get all `message'-calls in the list VAR-NAME.
+The messages are stored in order of printing."
   (declare (indent 1) (debug t))
   `(let ((,var-name '()))
      (cl-letf (((symbol-function 'message)
@@ -76,17 +78,33 @@
                   (setq ,var-name (append ,var-name (list (apply #'format fmt args)))))))
        ,@body)))
 
+;;; Temp folders
+(defmacro with-ogt-temp-dirs (vars &rest body)
+  "Create temporary directories bound to VARS, execute BODY, and clean up.
+Example result:
+
+    (let ((src-dir (make-temp-file 'org-grimoire-test-' t))
+          (out-dir (make-temp-file 'org-grimoire-test-' t)))
+      ;; @body code
+    )"
+  (declare (indent 1))
+  `(let ,(mapcar (lambda (var) `(,var (make-temp-file "org-grimoire-test-" t))) vars)
+     ;; Ensures to delete the created directories
+     (unwind-protect
+         (progn ,@body)
+       ,@(mapcar (lambda (var) `(delete-directory ,var t)) vars))))
+
 ;; org-grimoire--config-get
 
 (ert-deftest ogt-config-get-existing ()
   "Test that `org-grimoire--config-get' does return existing settings correctly."
-  (with-grimoire-test-config
-   (should (equal (org-grimoire--config-get :site-title) "Test Blog"))
-   (should (equal (org-grimoire--config-get :per-page) 10))))
+  (with-ogt-config
+    (should (equal (org-grimoire--config-get :site-title) "My Blog"))
+    (should (equal (org-grimoire--config-get :per-page) 10))))
 
 (ert-deftest ogt-config-get-missing-key ()
   "Test that `org-grimoire--config-get' does return nil for non-existing settings correctly."
-  (with-grimoire-test-config
+  (with-ogt-config
     (should (equal (org-grimoire--config-get :theme) nil))))
 
 (ert-deftest org-grimoire-config-get-nil-config-test ()
@@ -98,20 +116,20 @@
 
 (ert-deftest ogt-load-config-valid ()
   "Test that `org-grimoire--config-load' does load the correct config in an grimoire folder."
-  (with-grimoire-fixture "valid-site"
+  (with-ogt-fixture "valid-site"
     (let ((loaded-config (org-grimoire--load-config)))
       (should (equal (plist-get loaded-config :site-title) "Fixture Blog")))))
 
 (ert-deftest ogt-load-config-base-dir-added ()
   "Test that `org-grimoire--config-load' does load the correct config in an grimoire folder."
-  (with-grimoire-fixture "valid-site"
+  (with-ogt-fixture "valid-site"
     (let ((loaded-config (org-grimoire--load-config)))
       (should (equal (plist-get loaded-config :base-dir) default-directory)))))
-    
+
 (ert-deftest ogt-load-config-missing ()
   "Test that `org-grimoire--config-load' does throw an error if no config can be found."
-  (with-grimoire-fixture "not-an-grimoire-folder"
-  (should-error (org-grimoire--load-config) :type 'user-error)))
+  (with-ogt-fixture "not-an-grimoire-folder"
+    (should-error (org-grimoire--load-config) :type 'user-error)))
 
 ;; Logging stuff
 
@@ -129,9 +147,9 @@
 
   (with-captured-messages messages
     (let ((info-text "Found 3 files."))
-    (org-grimoire--log :info info-text)
-    (should (equal (nth 0 messages) (format "[INFO] %s" info-text)))
-    (should (equal org-grimoire--log `((:info . ,info-text)))))))
+      (org-grimoire--log :info info-text)
+      (should (equal (nth 0 messages) (format "[INFO] %s" info-text)))
+      (should (equal org-grimoire--log `((:info . ,info-text)))))))
 
 (ert-deftest ogt-log-warning ()
   "Test that the function `org-grimoire--log' correctly logs warnings."
@@ -139,9 +157,9 @@
 
   (with-captured-messages messages
     (let ((warn-text "Missing tag."))
-    (org-grimoire--log :warn warn-text)
-    (should (equal (nth 0 messages) (format "[WARN] %s" warn-text)))
-    (should (equal org-grimoire--log `((:warn . ,warn-text)))))))
+      (org-grimoire--log :warn warn-text)
+      (should (equal (nth 0 messages) (format "[WARN] %s" warn-text)))
+      (should (equal org-grimoire--log `((:warn . ,warn-text)))))))
 
 (ert-deftest ogt-log-error ()
   "Test that the function `org-grimoire--log' correctly logs errors."
@@ -149,9 +167,9 @@
 
   (with-captured-messages messages
     (let ((error-text "Template not found!"))
-    (org-grimoire--log :error error-text)
-    (should (equal (nth 0 messages) (format "[ERROR] %s" error-text)))
-    (should (equal org-grimoire--log `((:error . ,error-text)))))))
+      (org-grimoire--log :error error-text)
+      (should (equal (nth 0 messages) (format "[ERROR] %s" error-text)))
+      (should (equal org-grimoire--log `((:error . ,error-text)))))))
 
 (ert-deftest ogt-log-append ()
   "Test that the function `org-grimoire--log' correctly appends additional messages."
@@ -229,54 +247,54 @@
 ;; Templates
 (ert-deftest ogt-default-theme-dir ()
   "Test that `org-grimoire--default-theme-dir' points to the correct theme dir (with and without cfg override)."
-  (with-grimoire-fixture "template-site"
-    (let ((org-grimoire--package-dir (expand-file-name "../" org-grimoire-test-base-dir))
-          (org-grimoire--config (list :base-dir default-directory)))
-      
-      (should (string-suffix-p "themes/default/" (org-grimoire--default-theme-dir)))
-      
-      (let ((org-grimoire--config (plist-put org-grimoire--config :default-theme-dir "my-base/")))
-        (should (string-suffix-p "template-site/my-base/" (org-grimoire--default-theme-dir)))))))
+  (with-ogt-config
+    (with-ogt-fixture "template-site"
+      (let ((org-grimoire--package-dir (expand-file-name "../" ogt-base-dir)))
+        
+        (should (string-suffix-p "themes/default/" (org-grimoire--default-theme-dir)))
+        
+        (let ((org-grimoire--config (plist-put org-grimoire--config :default-theme-dir "my-base/")))
+          (should (string-suffix-p "template-site/my-base/" (org-grimoire--default-theme-dir))))))))
 
 (ert-deftest ogt-resolve-theme-file-test ()
   "Test that `org-grimoire--resolve-theme-file' returns the correct child or default theme file."
-  (with-grimoire-fixture "template-site"
-    (let ((org-grimoire--package-dir (expand-file-name "../" org-grimoire-test-base-dir))
-          (user-theme (expand-file-name "themes/custom-theme/" default-directory))
-          (org-grimoire--config (list :base-dir default-directory)))
-      
-      ;; Returns a user theme file
-      (should (string-prefix-p user-theme (org-grimoire--resolve-theme-file "post.html" user-theme)))
-      
-      ;; Returns a default theme file if file is not present in user theme.
-      (should (string-match-p "themes/default/tags.html$" (org-grimoire--resolve-theme-file "tags.html" nil)))
-      
-      ;; File does not exist.
-      (should (equal nil (org-grimoire--resolve-theme-file "missing.html" user-theme))))))
+  (with-ogt-config
+    (with-ogt-fixture "template-site"
+      (let ((org-grimoire--package-dir (expand-file-name "../" ogt-base-dir))
+            (user-theme (expand-file-name "themes/custom-theme/" default-directory)))
+        
+        ;; Returns a user theme file
+        (should (string-prefix-p user-theme (org-grimoire--resolve-theme-file "post.html" user-theme)))
+        
+        ;; Returns a default theme file if file is not present in user theme.
+        (should (string-match-p "themes/default/tags.html$" (org-grimoire--resolve-theme-file "tags.html" nil)))
+        
+        ;; File does not exist.
+        (should (equal nil (org-grimoire--resolve-theme-file "missing.html" user-theme)))))))
 
 (ert-deftest ogt-load-template-test ()
   "Test that `org-grimoire--load-template' correctly loads a template and throws an error if the template does not exist."
-  (with-grimoire-fixture "template-site"
-    (let ((org-grimoire--package-dir (expand-file-name "../" org-grimoire-test-base-dir))
-          (user-theme (expand-file-name "themes/custom-theme/" default-directory))
-          (org-grimoire--config (list :base-dir default-directory)))
-      
-      (should (equal "<h1>Index</h1>" (string-trim (org-grimoire--load-template "index" user-theme))))
+  (with-ogt-config
+    (with-ogt-fixture "template-site"
+      (let ((org-grimoire--package-dir (expand-file-name "../" ogt-base-dir))
+            (user-theme (expand-file-name "themes/custom-theme/" default-directory)))
+        
+        (should (equal "<h1>Index</h1>" (string-trim (org-grimoire--load-template "index" user-theme))))
 
-      ;; error case - template does not exist
-      (org-grimoire--log-reset)
-      (with-captured-messages messages
-        (let ((result (org-grimoire--load-template "not-existing-template" user-theme)))
-          (should (equal result "<!-- Template not found: not-existing-template.html -->"))
-          (should (equal org-grimoire--log '((:error . "Template not found: not-existing-template.html"))))
-          (should (equal (nth 0 messages) "[ERROR] Template not found: not-existing-template.html")))))))
+        ;; error case - template does not exist
+        (org-grimoire--log-reset)
+        (with-captured-messages messages
+          (let ((result (org-grimoire--load-template "not-existing-template" user-theme)))
+            (should (equal result "<!-- Template not found: not-existing-template.html -->"))
+            (should (equal org-grimoire--log '((:error . "Template not found: not-existing-template.html"))))
+            (should (equal (nth 0 messages) "[ERROR] Template not found: not-existing-template.html"))))))))
 
 (ert-deftest ogt-process-includes ()
   "Tests that `org-grimoire--process-includes' correctly includes file content in another file."
-  (with-grimoire-fixture "template-site"
-    (let ((org-grimoire--package-dir (expand-file-name "../" org-grimoire-test-base-dir))
-          (user-theme (expand-file-name "themes/custom-theme/" default-directory))
-          (org-grimoire--config (list :base-dir default-directory)))
+  (with-ogt-config
+  (with-ogt-fixture "template-site"
+    (let ((org-grimoire--package-dir (expand-file-name "../" ogt-base-dir))
+          (user-theme (expand-file-name "themes/custom-theme/" default-directory)))
       
       ;; include an existing file
       (let* ((template "Before -> {{include post.html}} <- After")
@@ -292,33 +310,30 @@
           
           (should (equal result "Header  Footer"))
           (should (equal (nth 0 messages) "[ERROR] Include not found: missing.html"))
-          (should (equal org-grimoire--log '((:error . "Include not found: missing.html")))))))))
+          (should (equal org-grimoire--log '((:error . "Include not found: missing.html"))))))))))
 
 (ert-deftest ogt-render-template ()
   "Tests that `org-grimoire--render-template' correctly replaces {{variable}}."
-  (with-grimoire-fixture "template-site"
-    (let ((org-grimoire--package-dir (expand-file-name "../" org-grimoire-test-base-dir))
-          (user-theme (expand-file-name "themes/custom-theme/" default-directory))
-          (template "<h1>{{title}}</h1><p>{{content}}</p>")
-          (vars '(:title "Test" :content "Inhalt"))
-          (org-grimoire--config (list :base-dir default-directory)))
-      
-      (should (equal (org-grimoire--render-template template vars user-theme)
-                     "<h1>Test</h1><p>Inhalt</p>")))))
+  (with-ogt-config
+    (with-ogt-fixture "template-site"
+      (let ((org-grimoire--package-dir (expand-file-name "../" ogt-base-dir))
+            (user-theme (expand-file-name "themes/custom-theme/" default-directory))
+            (template "<h1>{{title}}</h1><p>{{content}}</p>")
+            (vars '(:title "Test" :content "Inhalt")))
+        
+        (should (equal (org-grimoire--render-template template vars user-theme)
+                       "<h1>Test</h1><p>Inhalt</p>"))))))
 
 (ert-deftest ogt-wrap-base ()
   "Tests that `org-grimoire--wrap-base' correctly loads the base template theme."
-  (with-grimoire-fixture "template-site"
-    (let* ((org-grimoire--package-dir (expand-file-name "../" org-grimoire-test-base-dir))
-           (user-theme (expand-file-name "themes/custom-theme/" default-directory))
-           (org-grimoire--config (list :base-dir default-directory
-                                       :site-title "Test Site"
-                                       :base-url "https://test.com"
-                                       :theme user-theme)))
-      
-      (let ((result (org-grimoire--wrap-base "<p>Post</p>" "Mein Post")))
-        (should (string-match-p "Mein Post" result))
-        (should (string-match-p "<p>Post</p>" result))))))
+  (with-ogt-config
+    (with-ogt-fixture "template-site"
+      (let* ((org-grimoire--package-dir (expand-file-name "../" ogt-base-dir))
+             (user-theme (expand-file-name "themes/custom-theme/" default-directory)))
+        
+        (let ((result (org-grimoire--wrap-base "<p>Post</p>" "Mein Post")))
+          (should (string-match-p "Mein Post" result))
+          (should (string-match-p "<p>Post</p>" result)))))))
 
 (ert-deftest ogt-wrap-base-custom-vars-test ()
   "Tests that `org-grimoire--wrap-base' correctly inserts custom variables."
@@ -326,20 +341,18 @@
                                     :theme "dummy-theme"
                                     :my-custom-global "Global variable")))
     
-    (cl-letf (((symbol-function 'org-grimoire--load-template)
-               (lambda (_name _theme)
-                 "<body>{{content}} | {{my-custom-global}} | {{page-var}}</body>")))
+    (with-mock
+      (mock (org-grimoire--load-template "base" "dummy-theme")
+            => "<body>{{content}} | {{my-custom-global}} | {{page-var}}</body>")
       
       (let* ((extra-vars '(:page-var "local variable"))
              (result (org-grimoire--wrap-base "Text" "Titel" nil extra-vars)))
         
-        (should (string-match-p "Text | global variable | local variable" result))))))
+        (should (string-search "Text | Global variable | local variable" result))))))
 
 (ert-deftest ogt-wrap-base-title-test ()
   "Tests that `org-grimoire--wrap-base' correctly sets the site-title & a custom title."
-  (let ((org-grimoire--config (list :site-title "My Blog"
-                                    :theme "dummy-theme")))
-    
+  (with-ogt-config
     ;; simulate an empty template with just title stuff
     (cl-letf (((symbol-function 'org-grimoire--load-template)
                (lambda (_name _theme)
@@ -352,5 +365,38 @@
         (should (string-match-p (format "<title>My Blog :: %s</title>" test-title) result))
         (should (string-match-p (format "<body>%s</body>" test-text) result))))))
 
-(provide 'org-grimoire-test)
+;; File handling
+
+(ert-deftest ogt-copy-static-nil ()
+  "Tests that `org-grimoire--copy-static' does log a warning if src-dir is nil."
+  (with-ogt-temp-dirs (dst-dir)
+    (with-mock
+      (mock (org-grimoire--log :warn "Static dir nil does not exist, did not copy any files."))
+      (org-grimoire--copy-static nil dst-dir))))
+      
+(ert-deftest ogt-copy-static-not-existing ()
+  "Tests that `org-grimoire--copy-static' does log a warning if it should copy from a dir which does not exist."
+  (with-ogt-temp-dirs (dst-dir)
+    (with-mock
+      (mock (org-grimoire--log :warn "Static dir /does/not/exist does not exist, did not copy any files."))
+      (org-grimoire--copy-static "/does/not/exist" dst-dir))))
+
+(ert-deftest ogt-copy-static-success ()
+  "Tests that `org-grimoire--copy-static' does correctly copies files if the src and dst dirs exist."
+  (with-ogt-temp-dirs (src-dir dst-dir)
+      (with-captured-messages messages
+    (let ((sub-dir (expand-file-name "css" src-dir)))
+      (make-directory sub-dir t)
+      (write-region "hello" nil (expand-file-name "test.txt" src-dir))
+      (write-region "body { color: red; }" nil (expand-file-name "style.css" sub-dir)))
+
+    (org-grimoire--copy-static src-dir dst-dir)
+
+    (should (= (length messages) 1))
+    (should (equal (nth 0 messages) (format "[INFO] Copied 2 static file(s) to %s." dst-dir))))
+    
+    (should (file-exists-p (expand-file-name "test.txt" dst-dir)))
+    (should (file-exists-p (expand-file-name "css/style.css" dst-dir)))))
+      
+      (provide 'org-grimoire-test)
 ;;; org-grimoire-test.el ends here

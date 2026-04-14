@@ -220,7 +220,7 @@ All global configuration variables are also available in the template."
 
 (defun org-grimoire--copy-static (static-dir output-dir)
   "Copy all files from STATIC-DIR to OUTPUT-DIR recursively."
-  (when (and static-dir (file-exists-p static-dir))
+  (if (and static-dir (file-exists-p static-dir))
     (let ((count 0))
       (dolist (file (directory-files-recursively static-dir ".*"))
         (let* ((relative (file-relative-name file static-dir))
@@ -229,7 +229,8 @@ All global configuration variables are also available in the template."
           (copy-file file dest t)
           (setq count (1+ count))))
       (org-grimoire--log :info
-                         (format "Copied %d static file(s) to %s." count output-dir)))))
+                         (format "Copied %d static file(s) to %s." count output-dir)))
+  (org-grimoire--log :warn (format "Static dir %s does not exist, did not copy any files." static-dir))))
 
 (defun org-grimoire--copy-theme-static (output-dir theme-dir)
   "Copy static files from THEME-DIR into OUTPUT-DIR/static/ if present."
@@ -777,15 +778,32 @@ Resolve :theme relative to the themes/ subdirectory of :base-dir."
       (when theme
         (setq final (plist-put final :theme
                                (expand-file-name theme
-                                            (expand-file-name "themes" base)))))
-      (dolist (key '(:source :output :static))
+                                                 (expand-file-name "themes" base)))))
+      
+      (dolist (key '(:source :output))
         (unless (plist-member final key)
           (setq final
                 (plist-put final key
                            (pcase key
                              (:source (expand-file-name "content" base))
-                             (:output (expand-file-name "public_html" base))
-                             (:static (expand-file-name "static" base))))))))
+                             (:output (expand-file-name "public_html" base)))))))
+      
+      (let ((has-static (plist-member final :static))
+            (static-val (plist-get final :static)))
+        (setq final
+              (plist-put final :static
+                         (if (not has-static)
+                             ;; Fallback: no :static cfg
+                             (list (expand-file-name "static" base))
+                           (cond
+                            ;; Single string (one directory)
+                            ((stringp static-val)
+                             (list (expand-file-name static-val base)))
+                            ;; list of strings (0-n directories)
+                            ((listp static-val)
+                             (mapcar (lambda (dir) (expand-file-name dir base)) static-val))
+                            ;; Fallback: nil
+                            (t nil)))))))
     final))
 
 (defun org-grimoire--validate-config (config)
@@ -815,7 +833,7 @@ Resolve :theme relative to the themes/ subdirectory of :base-dir."
     (org-grimoire--validate-config org-grimoire--config)
     (let ((source    (org-grimoire--config-get :source))
           (output    (org-grimoire--config-get :output))
-          (static    (org-grimoire--config-get :static))
+          (statics   (org-grimoire--config-get :static))
           (theme-dir (org-grimoire--config-get :theme)))
       (org-grimoire--log :info "Build started")
       (org-grimoire--log :info (format "Source: %s" source))
@@ -823,7 +841,10 @@ Resolve :theme relative to the themes/ subdirectory of :base-dir."
       (condition-case err
           (let ((posts (org-grimoire--collect source output)))
             (org-grimoire--log :info (format "Collected %d post(s)." (length posts)))
-            (org-grimoire--copy-static static (expand-file-name "static" output))
+            
+            (dolist (static-dir statics)
+              (org-grimoire--copy-static static-dir (expand-file-name "static" output)))
+            
             (org-grimoire--copy-theme-static output theme-dir)
             (org-grimoire--render-all posts)
             (org-grimoire--generate-index posts output)
