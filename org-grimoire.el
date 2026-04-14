@@ -389,7 +389,9 @@ directly in SOURCE-DIR with no type subdirectory are skipped."
     ""))
 
 (defun org-grimoire--post-site-url (post)
-  "Return the root-relative URL for POST."
+  "Return the root-relative URL for POST.
+Variable output comes from e.g. `org-grimoire--collect-file'
+    (output   (expand-file-name ..."
   (concat "/"
           (file-relative-name (plist-get post :output)
                               (org-grimoire--config-get :output))))

@@ -621,6 +621,138 @@ Example result:
       (should (equal (plist-get (nth 1 sorted) :title) "Mid"))
       (should (equal (plist-get (nth 2 sorted) :title) "Old"))
       (should (equal (plist-get (nth 3 sorted) :title) "NoDate")))))
+
+;;; --- Rendering Tests ---
+
+(ert-deftest ogt-org-to-html-successfull ()
+  "Tests that `org-grimoire--org-to-html' successfully exports Org syntax to HTML body."
+  (let* ((temp-file (make-temp-file "ogt-export-" nil ".org")))
+    (unwind-protect
+        (progn
+          (write-region "Hello *bold* and /italic/." nil temp-file)
+          
+          (let ((html (org-grimoire--org-to-html temp-file)))
+            (should (string-match-p "Hello" html))
+            (should (or (string-match-p "<b>bold</b>" html)
+                        (string-match-p "<strong>bold</strong>" html)))
+            ;; There shouldn't be any head boilerplate as org-export-as is called with onlybody
+            (should-not (string-match-p "<head>" html))))
+      (delete-file temp-file))))
+
+(ert-deftest ogt-tags-html-successfull ()
+  "Tests that `org-grimoire--tags-html' creates correct links to tags inside a div with the correct classnames."
+
+  ;; mock to only downcase as it is not important here.
+  (cl-letf (((symbol-function 'org-grimoire--tag-to-slug) #'downcase))
+    (let ((html (org-grimoire--tags-html '("Emacs" "Lisp"))))
+      (should (string-search "<div class=\"grimoire-tags\">" html))
+      ;; check slug + correct name
+      (should (string-search "<a class=\"grimoire-tag\" href=\"/tags/emacs.html\">Emacs</a>" html))
+      (should (string-search "<a class=\"grimoire-tag\" href=\"/tags/lisp.html\">Lisp</a>" html)))))
+
+(ert-deftest ogt-tags-html-nil ()
+  "Tests that `org-grimoire--tags-html' returns an empty string if called with no tags."
+  (should (equal (org-grimoire--tags-html nil) "")))
+
+(ert-deftest ogt-post-site-url-success ()
+  "Tests that `org-grimoire--post-site-url' returns the correct root-relative URL."
+  (cl-letf (((symbol-function 'org-grimoire--config-get)
+             (lambda (key)
+               (if (eq key :output) "/var/www/public/" nil))))
+    
+    (let ((post '(:output "/var/www/public/blog/my-post.html")))
+      (should (equal (org-grimoire--post-site-url post) "/blog/my-post.html")))))
+
+(ert-deftest ogt-render-post ()
+  "Tests the orchestration of templates and HTML conversion for a single post."
+
+  ;; mock everything to just test render-post
+  (cl-letf (((symbol-function 'org-grimoire--config-get) (lambda (_) "dummy-theme"))
+            ((symbol-function 'org-grimoire--load-template) (lambda (_type _theme) "TEMPLATE-STRING"))
+            ((symbol-function 'org-grimoire--org-to-html) (lambda (_src) "<p>Content</p>"))
+            ((symbol-function 'org-grimoire--tags-html) (lambda (_tags) "<tags>"))
+            ((symbol-function 'org-grimoire--post-site-url) (lambda (_p) "/post.html"))
+            
+            ;; Just append the variables in render-template
+            ((symbol-function 'org-grimoire--render-template)
+             (lambda (_tmpl vars _theme)
+               (format "Title:%s Content:%s" (plist-get vars :title) (plist-get vars :content))))
+            
+            ;; Add something via the base wrapper
+            ((symbol-function 'org-grimoire--wrap-base)
+             (lambda (inner title url)
+               (format "[BASE url=%s] %s" url inner))))
+    
+    (let* ((post '(:type "blog" :title "My Title" :source "test.org"))
+           (result (org-grimoire--render-post post)))
       
+      (should (equal result "[BASE url=/post.html] Title:My Title Content:<p>Content</p>")))))
+
+;;; --- Write & Asset Pipeline Tests ---
+
+(ert-deftest ogt-copy-assets ()
+  "Tests that assets are copied relative to the source directory."
+  (with-ogt-temp-dirs (src-dir out-dir)
+    (let ((sub-dir (expand-file-name "gfx" src-dir)))
+      (make-directory sub-dir t)
+      (let* ((img-file (expand-file-name "gfx/image.png" src-dir))
+             (source-file (expand-file-name "post.org" src-dir))
+             (output-file (expand-file-name "post.html" out-dir))
+             (expected-dest (expand-file-name "gfx/image.png" out-dir)))
+        
+        (write-region "binary-data" nil img-file)
+        
+        (org-grimoire--copy-assets (list img-file) source-file output-file)
+        
+        (should (file-exists-p expected-dest))))))
+
+(ert-deftest ogt-write-post ()
+  "Tests that a post is rendered, written to disk, and assets are copied."
+  (with-ogt-temp-dirs (out-dir)
+    (let* ((out-file (expand-file-name "post.html" out-dir))
+           (post `(:output ,out-file :source "dummy.org" :assets ("img.png")))
+           (assets-copied nil))
+      
+      (cl-letf (((symbol-function 'org-grimoire--render-post)
+                 (lambda (_p) "<html>MOCKED HTML</html>"))
+                
+                ((symbol-function 'org-grimoire--copy-assets)
+                 (lambda (assets _src _out)
+                   (should (equal assets '("img.png")))
+                   (setq assets-copied t))))
+        
+        (with-captured-messages messages
+          (org-grimoire--write-post post)
+          
+          (should (file-exists-p out-file))
+          (should (equal (with-temp-buffer (insert-file-contents out-file) (buffer-string))
+                         "<html>MOCKED HTML</html>"))
+          (should assets-copied)
+          (should (= (length messages) 1))
+          (should (string-match-p "\\[INFO ?\\]" (nth 0 messages)))
+          (should (string-search "Rendered:" (nth 0 messages))))))))
+
+(ert-deftest ogt-render-all ()
+  "Tests the render loop and ensures errors in single posts don't crash the loop."
+  (let ((post-success '(:source "good.org"))
+        (post-fail '(:source "bad.org"))
+        (render-count 0))
+    
+    (cl-letf (((symbol-function 'org-grimoire--write-post)
+               (lambda (post)
+                 (cl-incf render-count)
+                 (when (equal (plist-get post :source) "bad.org")
+                   (error "Simulated rendering error")))))
+      
+      (with-captured-messages messages
+        (org-grimoire--render-all (list post-success post-fail))
+        
+        (should (= render-count 2))
+        
+        (should (= (length messages) 1))
+        (should (string-match-p "\\[WARN ?\\]" (nth 0 messages)))
+        (should (string-search "Failed to render bad.org" (nth 0 messages)))
+        (should (string-search "Simulated rendering error" (nth 0 messages)))))))
+
 (provide 'org-grimoire-test)
 ;;; org-grimoire-test.el ends here
