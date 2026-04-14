@@ -427,6 +427,200 @@ Example result:
 
         (org-grimoire--copy-theme-static dst-dir theme-dir)
         (should was-called)))))
+
+;;; Collect
+
+(ert-deftest ogt-extract-keyword-nil ()
+  "Tests that `org-grimoire--extract-keyword' correctly finds #+KEYWORDS."
+  (with-temp-buffer
+    (insert "#+DATE: 2023-10-01\n#+DRAFT: t\nTITLE: this is just in text.")
+    (org-mode)
+    (let ((ast (org-element-parse-buffer)))
+      (should (equal (org-grimoire--extract-keyword ast "TITLE") nil)))))
+
+(ert-deftest ogt-extract-keyword-success ()
+  "Tests that `org-grimoire--extract-keyword' correctly finds #+KEYWORDS."
+  (with-temp-buffer
+    (insert "#+TITLE: Hello World\n#+DATE: 2023-10-01\n#+DRAFT: t")
+    (org-mode)
+    (let ((ast (org-element-parse-buffer)))
+      (should (equal (org-grimoire--extract-keyword ast "TITLE") "Hello World"))
+      (should (equal (org-grimoire--extract-keyword ast "DRAFT") "t"))
+      (should (null (org-grimoire--extract-keyword ast "MISSING"))))))
+
+(ert-deftest ogt-reading-time-from-ast-success ()
+  "Tests the reading time calculation based on word count."
+  (with-temp-buffer
+    (insert "#+TITLE: Ignore this completely, longer title, ...\nOne two three four five six seven eight nine ten.")
+    (org-mode)
+    (let ((ast (org-element-parse-buffer)))
+      ;; 10 words / 200 WPM roundet to 0 -> 0 min
+      (should (equal (org-grimoire--reading-time-from-ast ast) "0 min read"))
+      ;; 10 words / 19 WPM roundet to 1 -> 1 min
+      (should (equal (org-grimoire--reading-time-from-ast ast 19) "1 min read"))
+      ;; 10 words / 20 WPM roundet to 0 -> 0 min
+      (should (equal (org-grimoire--reading-time-from-ast ast 20) "0 min read"))
+      ;; 20 words / 2 WPM -> = 5 Min)
+      (should (equal (org-grimoire--reading-time-from-ast ast 2) "5 min read")))))
+
+(ert-deftest ogt-reading-time-from-ast-zero-words ()
+  "Tests the reading time calculation based on word count."
+  (with-temp-buffer
+    (insert "")
+    (org-mode)
+    (let ((ast (org-element-parse-buffer)))
+      (should (equal (org-grimoire--reading-time-from-ast ast 1) "0 min read")))))
+
+;;; --- Utility Tests ---
+
+(ert-deftest ogt-file-to-slug ()
+  "Tests that `org-grimoire--file-to-slug' strips path and extension."
+  (should (equal (org-grimoire--file-to-slug "/var/www/site/my-cool-post.org") "my-cool-post"))
+  (should (equal (org-grimoire--file-to-slug "just_a-name.org") "just_a-name")))
+
+(ert-deftest ogt-parse-tags ()
+  "Tests that `org-grimoire--parse-tags' parses various tag formats in addition to the default FILETAGS format."
+  ;; the actual correct one
+  (should (equal (org-grimoire--parse-tags ":elisp:emacs:org:") '("elisp" "emacs" "org")))
+  ;; with fallbacks
+  (should (equal (org-grimoire--parse-tags "elisp:emacs:org") '("elisp" "emacs" "org")))
+  (should (equal (org-grimoire--parse-tags "elisp, emacs org") '("elisp" "emacs" "org")))
+  (should (equal (org-grimoire--parse-tags "elisp emacs org") '("elisp" "emacs" "org")))
+  (should (equal (org-grimoire--parse-tags ":singleTag:") '("singleTag")))
+  (should (equal (org-grimoire--parse-tags "singleTag,") '("singleTag")))
+  (should (equal (org-grimoire--parse-tags "singleTag, ") '("singleTag")))
+  (should (equal (org-grimoire--parse-tags "singleTag") '("singleTag")))
+  (should (null (org-grimoire--parse-tags nil))))
+
+(ert-deftest ogt-normalize-boolean ()
+  "Tests that `org-grimoire--normalize-boolean' normalizes t, True and yes to boolean t."
+  (should (equal (org-grimoire--normalize-boolean "t") t))
+  (should (equal (org-grimoire--normalize-boolean "T") t))
+  (should (equal (org-grimoire--normalize-boolean "True") t))
+  (should (equal (org-grimoire--normalize-boolean "true") t))
+  (should (equal (org-grimoire--normalize-boolean "TRUE") t))
+  (should (equal (org-grimoire--normalize-boolean "YES") t))
+  (should (equal (org-grimoire--normalize-boolean "yes") t))
+  ;; Negatives
+  (should (equal (org-grimoire--normalize-boolean "no") nil))
+  (should (equal (org-grimoire--normalize-boolean "false") nil))
+  ;; Default Value Handling
+  (should (equal (org-grimoire--normalize-boolean nil 'my-default) 'my-default))
+  (should (equal (org-grimoire--normalize-boolean nil t) t)))
+
+(ert-deftest ogt-infer-type ()
+  "Tests that `org-grimoire--infer-type' inferrs the post type from the immediate subdirectory of source."
+  (should (equal (org-grimoire--infer-type "/source/blog/my-post.org" "/source/") "blog"))
+  (should (equal (org-grimoire--infer-type "/source/blog/2026/my-post.org" "/source/") "blog"))
+  (should (equal (org-grimoire--infer-type "/source/pages/about.org" "/source/") "pages"))
+  ;; No subdir, directly source
+  (should (null (org-grimoire--infer-type "/source/index.org" "/source/"))))
+
+;;; --- Collecting Assets & Files ---
+
+(ert-deftest ogt-collect-assets ()
+  "Tests that `org-grimoire--collect-assets' checks for assets and links are extracted and missing ones log a error."
+  (let* ((temp-dir (make-temp-file "ogt-assets-" t))
+         (img-path (expand-file-name "test-image.png" temp-dir))
+         (source-file (expand-file-name "post.org" temp-dir)))
+    
+    (unwind-protect
+        (progn
+          (write-region "dummy" nil img-path)
+          
+          (with-temp-buffer
+            (insert "Ein gültiges Bild: [[file:test-image.png]]\n")
+            (insert "Ein fehlendes Bild: [[file:does-not-exist.jpg]]\n")
+            (org-mode)
+            
+            (let ((ast (org-element-parse-buffer)))
+              
+              (with-captured-messages messages
+                (let ((assets (org-grimoire--collect-assets ast source-file)))
+                  
+                  ;; Only the existing image ("test-image.png") is kept
+                  (should (= (length assets) 1))
+                  (should (equal (car assets) img-path))
+                  
+                  ;; Theres one error
+                  (should (= (length messages) 1))
+                  
+                  ;; Check if it is an error
+                  (should (equal (nth 0 messages) "[ERROR] Asset missing: 'does-not-exist.jpg' referenced in 'post.org'!")))))))
+      
+      (delete-directory temp-dir t))))
+
+(ert-deftest ogt-collect-file ()
+  "Tests that `org-grimoire--collect-file' collects all relevant properties from an file."
+  (let* ((src-dir (make-temp-file "ogt-src-" t))
+         (out-dir "/fake-out/")
+         (blog-dir (expand-file-name "blog" src-dir))
+         (org-file (expand-file-name "test-post.org" blog-dir)))
+    
+    (unwind-protect
+        (progn
+          (make-directory blog-dir t)
+          (write-region "#+TITLE: My Post\n#+DATE: 2023-11-11\n#+FILETAGS: :emacs:lisp:\nHello!" nil org-file)
+          
+          (cl-letf (((symbol-function 'org-grimoire--config-get)
+                     (lambda (key) (eq key :reading-time))))
+            
+            (let ((post (org-grimoire--collect-file org-file src-dir out-dir)))
+              (should (equal (plist-get post :title) "My Post"))
+              (should (equal (plist-get post :date) "2023-11-11"))
+              (should (equal (plist-get post :type) "blog"))  ;; got from blog folder
+              (should (equal (plist-get post :draft) nil))
+              (should (equal (plist-get post :listed) t))
+              (should (equal (plist-get post :tags) '("emacs" "lisp")))
+              (should (equal (plist-get post :slug) "test-post"))
+              (should (equal (plist-get post :reading-time) "0 min read"))
+              (should (equal (plist-get post :output) "/fake-out/blog/test-post.html")))))
+      
+      (delete-directory src-dir t))))
+
+;;; --- Pipeline Tests (Collecting many & Sorting) ---
+
+(ert-deftest ogt-collect ()
+  "Tests that `org-grimoire--collect' collects all valid files, ignoring drafts and typeless files."
+  (cl-letf (((symbol-function 'directory-files-recursively)
+             (lambda (_dir _regex) '("file1.org" "file2.org" "file3.org")))
+            
+            ;; return faked plists
+            ((symbol-function 'org-grimoire--collect-file)
+             (lambda (f _s _o)
+               (cond ((equal f "file1.org") '(:title "Valid Post" :type "blog" :draft nil))
+                     ((equal f "file2.org") '(:title "Draft Post" :type "blog" :draft t))
+                     ((equal f "file3.org") '(:title "Typeless"   :type nil    :draft nil))))))
+    
+    (with-captured-messages messages
+      (let ((posts (org-grimoire--collect "/src" "/out")))
+        
+        ;; Only file1.org should be there
+        (should (= (length posts) 1))
+        (should (equal (plist-get (car posts) :title) "Valid Post"))
+        
+        ;; Expected logs (1 Info für Draft, 1 Warnung für Typeless)
+        (should (= (length messages) 2))
+        
+        (should (string-match-p "\\[INFO ?\\]" (nth 0 messages)))
+        (should (string-search "Skipping draft: file2.org" (nth 0 messages)))
+        
+        (should (string-match-p "\\[WARN ?\\]" (nth 1 messages)))
+        (should (string-search "No type directory, skipping: file3.org" (nth 1 messages)))))))
+
+(ert-deftest ogt-sort-posts-by-date ()
+  "Tests that `org-grimoire--sort-posts-by-date' sorts posts by date from newest to oldest."
+  (let* ((post-old '(:title "Old" :date "2020-01-01"))
+         (post-new '(:title "New" :date "2023-12-12"))
+         (post-mid '(:title "Mid" :date "2022-05-05"))
+         (post-nil '(:title "NoDate" :date nil))
+         (posts (list post-old post-nil post-new post-mid)))
+    
+    (let ((sorted (org-grimoire--sort-posts-by-date posts)))
+      (should (equal (plist-get (nth 0 sorted) :title) "New"))
+      (should (equal (plist-get (nth 1 sorted) :title) "Mid"))
+      (should (equal (plist-get (nth 2 sorted) :title) "Old"))
+      (should (equal (plist-get (nth 3 sorted) :title) "NoDate")))))
       
 (provide 'org-grimoire-test)
 ;;; org-grimoire-test.el ends here

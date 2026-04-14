@@ -255,7 +255,7 @@ WPM is the words-per-minute rate; it defaults to 200."
   (let* ((text    (org-element-interpret-data ast))
          (clean   (replace-regexp-in-string "^#\\+[A-Z_]+:.*$" "" text))
          (words   (length (split-string clean "\\W+" t)))
-         (minutes (max 1 (round (/ (float words) (or wpm 200))))))
+         (minutes (max 0 (round (/ (float words) (or wpm 200))))))
     (format "%d min read" minutes)))
 
 (defun org-grimoire--file-to-slug (filepath)
@@ -263,9 +263,11 @@ WPM is the words-per-minute rate; it defaults to 200."
   (file-name-sans-extension (file-name-nondirectory filepath)))
 
 (defun org-grimoire--parse-tags (tags-string)
-  "Return a list of tags parsed from TAGS-STRING."
+  "Return a list of tags parsed from TAGS-STRING.
+Splits by colons (Org-Mode standard), commas and spaces.
+Empty tags are removed."
   (when tags-string
-    (split-string tags-string "[ ,]+" t "[ \t]+")))
+    (split-string tags-string "[:, \t]+" t)))
 
 (defun org-grimoire--collect-assets (ast source-file)
   "Return a list of absolute paths for all file: links found in AST.
@@ -277,8 +279,12 @@ Paths are resolved relative to SOURCE-FILE and filtered to those that exist."
               (when (string= (org-element-property :type el) "file")
                 (let* ((path     (org-element-property :path el))
                        (absolute (expand-file-name path source-dir)))
-                  (when (file-exists-p absolute)
-                    absolute))))))))
+                  (if (file-exists-p absolute)
+                      absolute
+                    (org-grimoire--log :error (format "Asset missing: '%s' referenced in '%s'!"
+                                                      path
+                                                      (file-name-nondirectory source-file)))
+                    nil))))))))
 
 (defun org-grimoire--normalize-boolean (str &optional default)
   "Return the boolean interpretation of STR.
@@ -312,7 +318,8 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
            (listed   (org-grimoire--normalize-boolean
                       (org-grimoire--extract-keyword ast "LISTED") t))
            (tags     (org-grimoire--parse-tags
-                      (org-grimoire--extract-keyword ast "TAGS")))
+                      (or (org-grimoire--extract-keyword ast "TAGS")
+                          (org-grimoire--extract-keyword ast "FILETAGS"))))
            (slug     (org-grimoire--file-to-slug filepath))
            (relative (file-relative-name filepath source-dir))
            (output   (expand-file-name
