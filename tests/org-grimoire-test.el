@@ -32,7 +32,6 @@
 ;;; Code:
 
 (require 'ert)
-(require 'el-mock)
 (require 'org-grimoire
          (expand-file-name "org-grimoire.el"
                            (file-name-directory (or load-file-name buffer-file-name))))
@@ -341,9 +340,11 @@ Example result:
                                     :theme "dummy-theme"
                                     :my-custom-global "Global variable")))
     
-    (with-mock
-      (mock (org-grimoire--load-template "base" "dummy-theme")
-            => "<body>{{content}} | {{my-custom-global}} | {{page-var}}</body>")
+    (cl-letf (((symbol-function 'org-grimoire--load-template)
+               (lambda (name theme)
+                 (should (equal name "base"))
+                 (should (equal theme "dummy-theme"))
+                 "<body>{{content}} | {{my-custom-global}} | {{page-var}}</body>")))
       
       (let* ((extra-vars '(:page-var "local variable"))
              (result (org-grimoire--wrap-base "Text" "Titel" nil extra-vars)))
@@ -370,16 +371,20 @@ Example result:
 (ert-deftest ogt-copy-static-nil ()
   "Tests that `org-grimoire--copy-static' does log a warning if src-dir is nil."
   (with-ogt-temp-dirs (dst-dir)
-    (with-mock
-      (mock (org-grimoire--log :warn "Static dir nil does not exist, did not copy any files."))
-      (org-grimoire--copy-static nil dst-dir))))
-      
+    (with-captured-messages messages
+      (org-grimoire--copy-static nil dst-dir)
+      (should (= (length messages) 1))
+      (should (equal (nth 0 messages) "[WARN] Static dir nil does not exist, did not copy any files.")))))
+
 (ert-deftest ogt-copy-static-not-existing ()
   "Tests that `org-grimoire--copy-static' does log a warning if it should copy from a dir which does not exist."
   (with-ogt-temp-dirs (dst-dir)
-    (with-mock
-      (mock (org-grimoire--log :warn "Static dir /does/not/exist does not exist, did not copy any files."))
-      (org-grimoire--copy-static "/does/not/exist" dst-dir))))
+    (with-captured-messages messages
+      
+      (org-grimoire--copy-static "/does/not/exist" dst-dir)
+
+      (should (= (length messages) 1))
+      (should (equal (nth 0 messages) "[WARN] Static dir /does/not/exist does not exist, did not copy any files.")))))
 
 (ert-deftest ogt-copy-static-success ()
   "Tests that `org-grimoire--copy-static' does correctly copies files if the src and dst dirs exist."
@@ -397,6 +402,31 @@ Example result:
     
     (should (file-exists-p (expand-file-name "test.txt" dst-dir)))
     (should (file-exists-p (expand-file-name "css/style.css" dst-dir)))))
+
+(ert-deftest ogt-copy-theme-static-no-static-folder ()
+  "Tests that `org-grimoire--copy-static' does not call copy-static if no static dir is in theme-dir."
+  (with-ogt-temp-dirs (out-dir theme-dir)
+    
+    (cl-letf (((symbol-function 'org-grimoire--copy-static)
+               (lambda (_src _dst)
+                 (ert-fail "org-grimoire--copy-static called with not existing folder!"))))
       
-      (provide 'org-grimoire-test)
+      (org-grimoire--copy-theme-static out-dir theme-dir))))
+
+(ert-deftest ogt-copy-theme-static-success ()
+  "Tests that `org-grimoire--copy-static' does correctly copy a static folder in theme-dir."
+  (with-ogt-temp-dirs (theme-dir dst-dir)
+    (let ((theme-static (expand-file-name "static" theme-dir))
+          (was-called nil))
+      (make-directory theme-static t)
+      (cl-letf (((symbol-function 'org-grimoire--copy-static)
+                 (lambda (src dst)
+                   (setq was-called t)
+                   (should (equal src theme-static))
+                   (should (equal dst (expand-file-name "static" dst-dir))))))
+
+        (org-grimoire--copy-theme-static dst-dir theme-dir)
+        (should was-called)))))
+      
+(provide 'org-grimoire-test)
 ;;; org-grimoire-test.el ends here
