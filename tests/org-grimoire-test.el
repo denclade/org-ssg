@@ -754,5 +754,77 @@ Example result:
         (should (string-search "Failed to render bad.org" (nth 0 messages)))
         (should (string-search "Simulated rendering error" (nth 0 messages)))))))
 
+;; Index and pagination
+(ert-deftest ogt-render-post-item ()
+  "Tests that `org-grimoire--render-post-item' correctly formats a post item."
+  (with-ogt-config
+    
+    ;; 1. Wir definieren leere Variablen, um die Daten "einzufangen"
+    (let ((captured-template-name nil)
+          (captured-vars nil))
+      
+      (cl-letf (((symbol-function 'org-grimoire--post-site-url)
+                 (lambda (_p) "/posts/sample.html"))
+                
+                ((symbol-function 'org-grimoire--load-template)
+                 (lambda (name _theme)
+                   ;; Wir fangen den Template-Namen ein
+                   (setq captured-template-name name)
+                   "DUMMY_TEMPLATE"))
+                
+                ((symbol-function 'org-grimoire--render-template)
+                 (lambda (_tmpl vars _theme)
+                   (setq captured-vars vars)
+                   "FINAL_HTML_RESULT")))
+        
+        ;; ==========================================
+        ;; Testfall 1: Standard Case
+        ;; ==========================================
+        (let ((post '(:title "Hello World" :date "2024-01-01" :tags ("org" "lisp") :output "/posts/sample.html")))
+          
+          (org-grimoire--render-post-item post "/themes/ogt/")
+          
+          (should (equal captured-template-name "partials/post-item"))
+          (should (equal (plist-get captured-vars :title) "Hello World"))
+          (should (equal (plist-get captured-vars :url) "/posts/sample.html"))
+          (should (equal (plist-get captured-vars :date) "2024-01-01"))
+          (should (equal (plist-get captured-vars :tags) "org, lisp")))
+        
+        ;; ==========================================
+        ;; Testfall 2: Edge case (Leer)
+        ;; ==========================================
+        (let ((post '(:output "/posts/sample.html")))
+          (setq captured-vars nil) ;; Reset!
+          
+          (org-grimoire--render-post-item post "/themes/ogt/")
+          
+          (should (equal (plist-get captured-vars :title) "Untitled"))
+          (should (equal (plist-get captured-vars :date) ""))
+          (should (equal (plist-get captured-vars :tags) "")))
+        
+        ;; ==========================================
+        ;; Testfall 3: Edge case (Tags explizit nil)
+        ;; ==========================================
+        (let ((post '(:title "No Tags" :tags nil :output "/posts/sample.html")))
+          (setq captured-vars nil) ;; Reset
+          
+          (org-grimoire--render-post-item post "/themes/ogt/")
+          
+          (should (equal (plist-get captured-vars :title) "No Tags"))
+          (should (equal (plist-get captured-vars :tags) "")))))))
+
+;; Tags
+(ert-deftest ogt-collect-tags ()
+  "Test `org-grimoire--collect-tags' builds correct tag-to-post mappings."
+  (let* ((post-a '(:title "Post A" :tags ("emacs" "lisp")))
+         (post-b '(:title "Post B" :tags ("lisp" "org-mode")))
+         (post-c '(:title "Post C" :tags ("emacs")))
+         (posts   (list post-a post-b post-c))
+         (tags    (org-grimoire--collect-tags posts)))
+    (should (hash-table-p tags))
+    (should (equal (gethash "emacs" tags) (list post-c post-a)))
+    (should (equal (gethash "lisp"  tags) (list post-b post-a)))
+    (should (equal (gethash "org-mode" tags) (list post-b)))))
+
 (provide 'org-grimoire-test)
 ;;; org-grimoire-test.el ends here
