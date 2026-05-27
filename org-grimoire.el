@@ -221,16 +221,21 @@ All global configuration variables are also available in the template."
 (defun org-grimoire--copy-static (static-dir output-dir)
   "Copy all files from STATIC-DIR to OUTPUT-DIR recursively."
   (if (and static-dir (file-exists-p static-dir))
-    (let ((count 0))
-      (dolist (file (directory-files-recursively static-dir ".*"))
-        (let* ((relative (file-relative-name file static-dir))
-               (dest     (expand-file-name relative output-dir)))
-          (make-directory (file-name-directory dest) t)
-          (copy-file file dest t)
-          (setq count (1+ count))))
-      (org-grimoire--log :info
-                         (format "Copied %d static file(s) to %s." count output-dir)))
-  (org-grimoire--log :warn (format "Static dir %s does not exist, did not copy any files." static-dir))))
+      (let ((count 0))
+        (dolist (file (directory-files-recursively static-dir ".*"))
+          (let* ((relative (file-relative-name file static-dir))
+                 (dest     (expand-file-name relative output-dir)))
+
+            (if (string-match-p "\\.scss\\'" file)
+                (let ((css-dest (concat (file-name-sans-extension dest) ".css")))
+                  (org-grimoire--compile-scss file css-dest))
+                (make-directory (file-name-directory dest) t)
+                (copy-file file dest t))
+            
+            (setq count (1+ count))))
+        (org-grimoire--log :info
+                           (format "Copied %d static file(s) to %s." count output-dir)))
+    (org-grimoire--log :warn (format "Static dir %s does not exist, did not copy any files." static-dir))))
 
 (defun org-grimoire--copy-theme-static (output-dir theme-dir)
   "Copy static files from THEME-DIR into OUTPUT-DIR/static/ if present."
@@ -238,6 +243,20 @@ All global configuration variables are also available in the template."
          (theme-static (expand-file-name "static" theme)))
     (when (file-exists-p theme-static)
       (org-grimoire--copy-static theme-static (expand-file-name "static" output-dir)))))
+
+(defun org-grimoire--compile-scss (infile outfile)
+  "Compile INFILE (SCSS) to OUTFILE (CSS) if a compiler is found on the system."
+  (let ((compiler (or (executable-find "sass")
+                      (executable-find "sassc")
+                      (executable-find "node-sass"))))
+    (make-directory (file-name-directory outfile) t)
+    (if compiler
+        (let ((exit-code (call-process compiler nil nil nil infile outfile)))
+          (if (= exit-code 0)
+              (org-grimoire--log :info (format "Compiled SCSS: %s" (file-name-nondirectory outfile)))
+            (org-grimoire--log :error (format "SCSS compilation failed for %s" infile))))
+      (org-grimoire--log :warn (format "No SCSS compiler found! Can't compile %s" infile))
+      (copy-file infile outfile t))))
 
 ;;; Collect:
 
@@ -424,7 +443,10 @@ Variable output comes from e.g. `org-grimoire--collect-file'
          (url       (org-grimoire--post-site-url post))
 
          (css-html  (mapconcat (lambda (href)
-                                 (format "<link rel=\"stylesheet\" href=\"%s\">\n  " href))
+                                 (let ((final-href (if (string-match-p "\\.scss\\'" href)
+                                                       (concat (file-name-sans-extension href) ".css")
+                                                     href)))
+                                   (format "<link rel=\"stylesheet\" href=\"%s\">\n  " final-href)))
                                (plist-get post :css) ""))
          (js-html   (mapconcat (lambda (src)
                                  (format "<script src=\"%s\" defer></script>\n  " src))
@@ -437,8 +459,8 @@ Variable output comes from e.g. `org-grimoire--collect-file'
                                                          :reading-time (or (plist-get post :reading-time) "")
                                                          :slug         (plist-get post :slug))
                                                    theme-dir)))
-    (org-grimoire--wrap-base inner title url 
-                             (list :extra-css css-html 
+    (org-grimoire--wrap-base inner title url
+                             (list :extra-css css-html
                                    :extra-js  js-html))))
 
 (defun org-grimoire--copy-assets (assets source-file output-file)
