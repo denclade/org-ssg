@@ -312,7 +312,12 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
     (let* ((ast      (org-element-parse-buffer))
            (title    (org-grimoire--extract-keyword ast "TITLE"))
            (date     (org-grimoire--extract-keyword ast "DATE"))
-           (type     (org-grimoire--infer-type filepath source-dir))
+           (file-type (org-grimoire--extract-keyword ast "TYPE"))
+           (inferred  (org-grimoire--infer-type filepath source-dir))
+           (aliases   (org-grimoire--config-get :type-aliases))
+           (type      (or (when file-type (downcase file-type)) ; prio 1: #+TYPE: in der Datei
+                          (cdr (assoc inferred aliases))        ; prio 2: :type-aliases in .grimoire.el
+                          inferred))                            ; prio 3: inferer file type
            (draft    (org-grimoire--normalize-boolean
                       (org-grimoire--extract-keyword ast "DRAFT")))
            (listed   (org-grimoire--normalize-boolean
@@ -321,6 +326,8 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
                       (or (org-grimoire--extract-keyword ast "TAGS")
                           (org-grimoire--extract-keyword ast "FILETAGS"))))
            (slug     (org-grimoire--file-to-slug filepath))
+           (css       (org-grimoire--extract-keyword-list ast "CSS"))
+           (js        (org-grimoire--extract-keyword-list ast "JS"))
            (relative (file-relative-name filepath source-dir))
            (output   (expand-file-name
                       (concat (file-name-sans-extension relative) ".html")
@@ -337,7 +344,9 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
             :reading-time (when (org-grimoire--config-get :reading-time)
                             (org-grimoire--reading-time-from-ast ast))
             :output       output
-            :assets       assets))))
+            :assets       assets
+            :css          css
+            :js           js))))
 
 (defun org-grimoire--collect (source-dir output-dir)
   "Return a list of post plists by scanning SOURCE-DIR recursively.
@@ -406,14 +415,21 @@ Variable output comes from e.g. `org-grimoire--collect-file'
          (date      (or (plist-get post :date) ""))
          (tags      (plist-get post :tags))
          (url       (org-grimoire--post-site-url post))
+
+         (css-html  (mapconcat (lambda (href)
+                                 (format "<link rel=\"stylesheet\" href=\"%s\">\n  " href))
+                               (plist-get post :css) ""))
+         (js-html   (mapconcat (lambda (src)
+                                 (format "<script src=\"%s\" defer></script>\n  " src))
+                               (plist-get post :js) ""))
          (inner     (org-grimoire--render-template template
-                      (list :title        title
-                            :content      content
-                            :date         date
-                            :tags         (org-grimoire--tags-html tags)
-                            :reading-time (or (plist-get post :reading-time) "")
-                            :slug         (plist-get post :slug))
-                      theme-dir)))
+                                                   (list :title        title
+                                                         :content      content
+                                                         :date         date
+                                                         :tags         (org-grimoire--tags-html tags)
+                                                         :reading-time (or (plist-get post :reading-time) "")
+                                                         :slug         (plist-get post :slug))
+                                                   theme-dir)))
     (org-grimoire--wrap-base inner title url)))
 
 (defun org-grimoire--copy-assets (assets source-file output-file)
