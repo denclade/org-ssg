@@ -249,6 +249,13 @@ All global configuration variables are also available in the template."
         (org-element-property :value el)))
     nil t))
 
+(defun org-grimoire--extract-keyword-list (ast keyword)
+  "Return a list of all values for KEYWORD from the Org AST."
+  (org-element-map ast 'keyword
+    (lambda (el)
+      (when (string= (org-element-property :key el) keyword)
+        (org-element-property :value el)))))
+
 (defun org-grimoire--reading-time-from-ast (ast &optional wpm)
   "Return an estimated reading-time string computed from AST.
 WPM is the words-per-minute rate; it defaults to 200."
@@ -430,7 +437,9 @@ Variable output comes from e.g. `org-grimoire--collect-file'
                                                          :reading-time (or (plist-get post :reading-time) "")
                                                          :slug         (plist-get post :slug))
                                                    theme-dir)))
-    (org-grimoire--wrap-base inner title url)))
+    (org-grimoire--wrap-base inner title url 
+                             (list :extra-css css-html 
+                                   :extra-js  js-html))))
 
 (defun org-grimoire--copy-assets (assets source-file output-file)
   "Copy ASSETS into the directory of OUTPUT-FILE.
