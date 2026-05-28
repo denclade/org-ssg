@@ -53,6 +53,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'filenotify)
 (require 'org)
 (require 'org-element)
 (require 'ox-html)
@@ -212,9 +213,20 @@ All global configuration variables are also available in the template."
                                  :title title
                                  :url (or url ""))
                            extra-vars
-                           org-grimoire--config)))
-    
-    (org-grimoire--render-template base all-vars theme-dir)))
+                           org-grimoire--config))
+         (html (org-grimoire--render-template base all-vars theme-dir)))
+
+    ;; inject live reload, if active watcher is found
+    (if (and (boundp 'org-grimoire--watch-descriptors)
+             org-grimoire--watch-descriptors)
+        (let ((script "\n<script>
+(function(){let v=null;setInterval(()=>{fetch('/grimoire-livereload').then(r=>r.text()).then(t=>{if(!v)v=t;else if(v!==t)location.reload();}).catch(()=>null);},1000)})();
+</script>\n</body>"))
+          (if (string-match-p "</body>" html)
+              (replace-regexp-in-string "</body>" script html t t)
+            (concat html script))) ;; Fallback, if </body> is missing
+      ;; If no watcher -> return html
+      html)))
 
 ;;; File Utilities:
 
@@ -937,6 +949,7 @@ Resolve :theme relative to the themes/ subdirectory of :base-dir."
             (org-grimoire--generate-tags posts output)
             (org-grimoire--generate-feeds posts output)
             (org-grimoire--generate-sitemap posts output)
+            (setq org-grimoire--build-version (float-time))
             (org-grimoire--log :info "Build complete.")
             (org-grimoire--log-summary))
         (error
@@ -966,6 +979,10 @@ Resolve :theme relative to the themes/ subdirectory of :base-dir."
      nil file)
     (find-file file)))
 
+;;; Serve page
+(defvar org-grimoire--build-version 0
+  "Timestamp of the last successfull build (used for live reload).")
+
 ;;;###autoload
 (defun org-grimoire-serve ()
   "Serve the built site for the project in the current directory and open it in the browser."
@@ -975,10 +992,100 @@ Resolve :theme relative to the themes/ subdirectory of :base-dir."
     (let* ((org-grimoire--config (org-grimoire--load-config))
            (output (org-grimoire--config-get :output)))
       (setq httpd-root output)
+
+      ;; Live reload
+      (defservlet grimoire-livereload "text/plain" ()
+        (insert (number-to-string org-grimoire--build-version)))
+      
       (httpd-start)
       (let ((url (format "http://localhost:%d" httpd-port)))
         (message "Serving %s at %s" output url)
         (browse-url url)))))
+
+;;; File watcher
+(defvar org-grimoire--watch-descriptors nil
+  "List of active file system watchers.")
+
+(defvar org-grimoire--watch-timer nil
+  "Timer for debouncing of the build events.
+Debouncing is required as the OS sometimes fires 2-3 events per change."
+  )
+
+(defun org-grimoire--watch-callback (event)
+  "Callback for file change.
+EVENT is the list coming from `filenotify'."
+  (let* ((file (nth 2 event))
+         (filename (file-name-nondirectory file)))
+    ;; ignored
+    (unless (or (string-prefix-p "." filename)
+                (string-prefix-p "#" filename))
+      
+      ;; cancle additional timer
+      (when org-grimoire--watch-timer
+        (cancel-timer org-grimoire--watch-timer))
+      
+      ;; Create new one
+      (setq org-grimoire--watch-timer
+            (run-with-timer 0.5 nil
+                            (lambda ()
+                              (message "[Watcher] Change in %s detected. Rebuild..." filename)
+                              (org-grimoire-build)))))))
+
+(defun org-grimoire--watch-add-dir-tree (dir)
+  "Add DIR and all subfolders recursively to watchers."
+  (when (and dir (file-exists-p dir))
+    ;; Den Hauptordner watchen
+    (push (file-notify-add-watch dir '(change attribute-change) #'org-grimoire--watch-callback)
+          org-grimoire--watch-descriptors)
+    ;; Alle Unterordner finden und watchen (Das 't' am Ende schließt Ordner ein)
+    (dolist (subdir (directory-files-recursively dir "^[^.]" t))
+      (when (file-directory-p subdir)
+        (push (file-notify-add-watch subdir '(change attribute-change) #'org-grimoire--watch-callback)
+              org-grimoire--watch-descriptors)))))
+
+;;;###autoload
+(defun org-grimoire-stop-watch ()
+  "Stops the automatic rebuild / file watcher and clears up active watchers."
+  (interactive)
+  (dolist (desc org-grimoire--watch-descriptors)
+    (ignore-errors (file-notify-rm-watch desc)))
+  (setq org-grimoire--watch-descriptors nil)
+  (when org-grimoire--watch-timer
+    (cancel-timer org-grimoire--watch-timer)
+    (setq org-grimoire--watch-timer nil))
+  (message "org-grimoire watcher stopped."))
+
+;;;###autoload
+(defun org-grimoire-watch ()
+  "Start a watcher for the current project.
+Watches src, static and theme folder for changes."
+  "Startet einen Watcher für das aktuelle Projekt.
+Überwacht Source-, Static- und Theme-Ordner auf Änderungen und baut die Seite neu."
+  (interactive)
+  (let* ((org-grimoire--config (org-grimoire--load-config))
+         (raw-sources (org-grimoire--config-get :source))
+         (raw-statics (org-grimoire--config-get :static))
+         (sources     (if (listp raw-sources) raw-sources (list raw-sources)))
+         (statics     (if (listp raw-statics) raw-statics (list raw-statics)))
+         (theme-dir (org-grimoire--config-get :theme)))
+    
+    ;; Clean old watchers (e.g. if calling this function twice)
+    (org-grimoire-stop-watch)
+    
+    ;; src
+    (dolist (src sources)
+      (org-grimoire--watch-add-dir-tree src))
+    
+    ;; static
+    (dolist (stat statics)
+      (org-grimoire--watch-add-dir-tree stat))
+    
+    ;; theme
+    (when theme-dir
+      (org-grimoire--watch-add-dir-tree theme-dir))
+    
+    (message "org-grimoire watcher running. Observing %d directories."
+             (length org-grimoire--watch-descriptors))))
 
 ;;;###autoload
 (defun org-grimoire-init (base-dir base-url site-title)
