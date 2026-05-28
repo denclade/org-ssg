@@ -1,10 +1,10 @@
-;;; org-grimoire-tests.el --- Unit tests for org-grimoire.el -*- lexical-binding: t -*-
+;;; org-ssg-tests.el --- Unit tests for org-ssg.el -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2023-2026  Free Software Foundation, Inc.
 
 ;; Author: Dennis Burgermeister <dennis@dencla.de>
 ;; Maintainer: Dennis Burgermeister <dennis@dencla.de>
-;; URL: https://github.com/denclade/org-grimoire
+;; URL: https://github.com/denclade/org-ssg
 
 ;; This file is NOT part of GNU Emacs.
 
@@ -23,8 +23,8 @@
 
 ;;; Commentary:
 
-;; Tests for org-grimoire.el.  Note that we are using Shorthands in
-;; this file, so the "ogt-" prefix really is "org-grimoire-test-".
+;; Tests for org-ssg.el.  Note that we are using Shorthands in
+;; this file, so the "ost-" prefix really is "org-ssg-test-".
 ;; Evaluate the following to learn more:
 ;;
 ;;    (info "(elisp) Shorthands")
@@ -32,33 +32,33 @@
 ;;; Code:
 
 (require 'ert)
-(require 'org-grimoire
-         (expand-file-name "org-grimoire.el"
+(require 'org-ssg
+         (expand-file-name "org-ssg.el"
                            (file-name-directory (or load-file-name buffer-file-name))))
 
 ;; Dummy data
 
-(defconst ogt--test-dummy-config
+(defconst ost--test-dummy-config
   '(:site-title "My Blog" :per-page 10)
   "Dummy configuration data for running tests.")
 
-(defmacro with-ogt-config (&rest body)
-  "Evaluate BODY with `org-grimoire--config' bound to dummy data."
+(defmacro with-ost-config (&rest body)
+  "Evaluate BODY with `org-ssg--config' bound to dummy data."
   (declare (indent 0) (debug t))
-  `(let ((org-grimoire--config (copy-sequence ogt--test-dummy-config)))
+  `(let ((org-ssg--config (copy-sequence ost--test-dummy-config)))
      ,@body))
 
 ;;; Fixture Setup:
 
-(defvar ogt-base-dir
+(defvar ost-base-dir
   (file-name-directory (or load-file-name buffer-file-name))
   "The base directory in which the tests are executed.")
 
-(defmacro with-ogt-fixture (fixture-name &rest body)
+(defmacro with-ost-fixture (fixture-name &rest body)
   "Execute BODY, the working directory is set to FIXTURE-NAME."
   (declare (indent 1) (debug t))
   `(let* ((fixture-dir (expand-file-name (concat "fixtures/" ,fixture-name "/")
-                                         ogt-base-dir))
+                                         ost-base-dir))
           (default-directory fixture-dir))
      
      (unless (file-directory-p fixture-dir)
@@ -78,164 +78,164 @@ The messages are stored in order of printing."
        ,@body)))
 
 ;;; Temp folders
-(defmacro with-ogt-temp-dirs (vars &rest body)
+(defmacro with-ost-temp-dirs (vars &rest body)
   "Create temporary directories bound to VARS, execute BODY, and clean up.
 Example result:
 
-    (let ((src-dir (make-temp-file 'org-grimoire-test-' t))
-          (out-dir (make-temp-file 'org-grimoire-test-' t)))
+    (let ((src-dir (make-temp-file 'org-ssg-test-' t))
+          (out-dir (make-temp-file 'org-ssg-test-' t)))
       ;; @body code
     )"
   (declare (indent 1))
-  `(let ,(mapcar (lambda (var) `(,var (make-temp-file "org-grimoire-test-" t))) vars)
+  `(let ,(mapcar (lambda (var) `(,var (make-temp-file "org-ssg-test-" t))) vars)
      ;; Ensures to delete the created directories
      (unwind-protect
          (progn ,@body)
        ,@(mapcar (lambda (var) `(delete-directory ,var t)) vars))))
 
-;; org-grimoire--config-get
+;; org-ssg--config-get
 
-(ert-deftest ogt-config-get-existing ()
-  "Test that `org-grimoire--config-get' does return existing settings correctly."
-  (with-ogt-config
-    (should (equal (org-grimoire--config-get :site-title) "My Blog"))
-    (should (equal (org-grimoire--config-get :per-page) 10))))
+(ert-deftest ost-config-get-existing ()
+  "Test that `org-ssg--config-get' does return existing settings correctly."
+  (with-ost-config
+    (should (equal (org-ssg--config-get :site-title) "My Blog"))
+    (should (equal (org-ssg--config-get :per-page) 10))))
 
-(ert-deftest ogt-config-get-missing-key ()
-  "Test that `org-grimoire--config-get' does return nil for non-existing settings correctly."
-  (with-ogt-config
-    (should (equal (org-grimoire--config-get :theme) nil))))
+(ert-deftest ost-config-get-missing-key ()
+  "Test that `org-ssg--config-get' does return nil for non-existing settings correctly."
+  (with-ost-config
+    (should (equal (org-ssg--config-get :theme) nil))))
 
-(ert-deftest org-grimoire-config-get-nil-config-test ()
-  "Test that `org-grimoire--config-get' does return an error if no config is loaded."
-  (let ((org-grimoire--config nil))
-    (should-error (org-grimoire--config-get :site-title) :type 'error)))
+(ert-deftest org-ssg-config-get-nil-config-test ()
+  "Test that `org-ssg--config-get' does return an error if no config is loaded."
+  (let ((org-ssg--config nil))
+    (should-error (org-ssg--config-get :site-title) :type 'error)))
 
-;; org-grimoire--config-load
+;; org-ssg--config-load
 
-(ert-deftest ogt-load-config-valid ()
-  "Test that `org-grimoire--config-load' does load the correct config in an grimoire folder."
-  (with-ogt-fixture "valid-site"
-    (let ((loaded-config (org-grimoire--load-config)))
+(ert-deftest ost-load-config-valid ()
+  "Test that `org-ssg--config-load' does load the correct config in an ssg folder."
+  (with-ost-fixture "valid-site"
+    (let ((loaded-config (org-ssg--load-config)))
       (should (equal (plist-get loaded-config :site-title) "Fixture Blog")))))
 
-(ert-deftest ogt-load-config-base-dir-added ()
-  "Test that `org-grimoire--config-load' does load the correct config in an grimoire folder."
-  (with-ogt-fixture "valid-site"
-    (let ((loaded-config (org-grimoire--load-config)))
+(ert-deftest ost-load-config-base-dir-added ()
+  "Test that `org-ssg--config-load' does load the correct config in an ssg folder."
+  (with-ost-fixture "valid-site"
+    (let ((loaded-config (org-ssg--load-config)))
       (should (equal (plist-get loaded-config :base-dir) default-directory)))))
 
-(ert-deftest ogt-load-config-missing ()
-  "Test that `org-grimoire--config-load' does throw an error if no config can be found."
-  (with-ogt-fixture "not-an-grimoire-folder"
-    (should-error (org-grimoire--load-config) :type 'user-error)))
+(ert-deftest ost-load-config-missing ()
+  "Test that `org-ssg--config-load' does throw an error if no config can be found."
+  (with-ost-fixture "not-an-ssg-folder"
+    (should-error (org-ssg--load-config) :type 'user-error)))
 
 ;; Logging stuff
 
-(ert-deftest ogt-log-reset-successfull ()
-  "Test that `org-grimoire--log-reset' does what it is supposed to do."
-  (setq org-grimoire--log '((:info . "Old info message") (:error . "Old error")))
+(ert-deftest ost-log-reset-successfull ()
+  "Test that `org-ssg--log-reset' does what it is supposed to do."
+  (setq org-ssg--log '((:info . "Old info message") (:error . "Old error")))
 
-  (org-grimoire--log-reset)
+  (org-ssg--log-reset)
 
-  (should (equal org-grimoire--log nil)))
+  (should (equal org-ssg--log nil)))
 
-(ert-deftest ogt-log-info ()
-  "Test that the function `org-grimoire--log' correctly logs infos."
-  (setq org-grimoire--log nil)
+(ert-deftest ost-log-info ()
+  "Test that the function `org-ssg--log' correctly logs infos."
+  (setq org-ssg--log nil)
 
   (with-captured-messages messages
     (let ((info-text "Found 3 files."))
-      (org-grimoire--log :info info-text)
+      (org-ssg--log :info info-text)
       (should (equal (nth 0 messages) (format "[INFO] %s" info-text)))
-      (should (equal org-grimoire--log `((:info . ,info-text)))))))
+      (should (equal org-ssg--log `((:info . ,info-text)))))))
 
-(ert-deftest ogt-log-warning ()
-  "Test that the function `org-grimoire--log' correctly logs warnings."
-  (setq org-grimoire--log nil)
+(ert-deftest ost-log-warning ()
+  "Test that the function `org-ssg--log' correctly logs warnings."
+  (setq org-ssg--log nil)
 
   (with-captured-messages messages
     (let ((warn-text "Missing tag."))
-      (org-grimoire--log :warn warn-text)
+      (org-ssg--log :warn warn-text)
       (should (equal (nth 0 messages) (format "[WARN] %s" warn-text)))
-      (should (equal org-grimoire--log `((:warn . ,warn-text)))))))
+      (should (equal org-ssg--log `((:warn . ,warn-text)))))))
 
-(ert-deftest ogt-log-error ()
-  "Test that the function `org-grimoire--log' correctly logs errors."
-  (setq org-grimoire--log nil)
+(ert-deftest ost-log-error ()
+  "Test that the function `org-ssg--log' correctly logs errors."
+  (setq org-ssg--log nil)
 
   (with-captured-messages messages
     (let ((error-text "Template not found!"))
-      (org-grimoire--log :error error-text)
+      (org-ssg--log :error error-text)
       (should (equal (nth 0 messages) (format "[ERROR] %s" error-text)))
-      (should (equal org-grimoire--log `((:error . ,error-text)))))))
+      (should (equal org-ssg--log `((:error . ,error-text)))))))
 
-(ert-deftest ogt-log-append ()
-  "Test that the function `org-grimoire--log' correctly appends additional messages."
-  (setq org-grimoire--log nil)
+(ert-deftest ost-log-append ()
+  "Test that the function `org-ssg--log' correctly appends additional messages."
+  (setq org-ssg--log nil)
 
   (with-captured-messages messages
     (let ((info-text "Found 3 files.")
           (info-text2 "Found 4 static files.")
           (warn-text "Missing tag.")
           )
-      (org-grimoire--log :info info-text)
-      (org-grimoire--log :info info-text2)
-      (org-grimoire--log :warn warn-text)
+      (org-ssg--log :info info-text)
+      (org-ssg--log :info info-text2)
+      (org-ssg--log :warn warn-text)
       
       (should (equal (nth 0 messages) (format "[INFO] %s" info-text)))
       (should (equal (nth 1 messages) (format "[INFO] %s" info-text2)))
       (should (equal (nth 2 messages) (format "[WARN] %s" warn-text)))
-      (should (equal org-grimoire--log `((:warn . ,warn-text)
+      (should (equal org-ssg--log `((:warn . ,warn-text)
                                          (:info . ,info-text2)
                                          (:info . ,info-text)))))))
 
-(ert-deftest ogt-log-summary-no-warn-error ()
-  "Test that `org-grimoire--log-summary' correctly outputs when there are no errors or warnings."
-  (setq org-grimoire--log nil)
-  (org-grimoire--log :info "Just some normal info.")
+(ert-deftest ost-log-summary-no-warn-error ()
+  "Test that `org-ssg--log-summary' correctly outputs when there are no errors or warnings."
+  (setq org-ssg--log nil)
+  (org-ssg--log :info "Just some normal info.")
   
   (with-captured-messages messages
-    (org-grimoire--log-summary)
+    (org-ssg--log-summary)
     
     (should (= (length messages) 1))
     (should (equal (car messages) "Build completed with no warnings or errors."))))
 
-(ert-deftest ogt-log-summary-with-warn ()
-  "Test that `org-grimoire--log-summary' shows errors or warnings if they are present."
-  (setq org-grimoire--log nil)
-  (org-grimoire--log :warn "Missing tag")
+(ert-deftest ost-log-summary-with-warn ()
+  "Test that `org-ssg--log-summary' shows errors or warnings if they are present."
+  (setq org-ssg--log nil)
+  (org-ssg--log :warn "Missing tag")
   
   (with-captured-messages messages
-    (org-grimoire--log-summary)
+    (org-ssg--log-summary)
     
     (should (= (length messages) 3))
     (should (equal (nth 0 messages) "--- Build Summary ---"))
     (should (equal (nth 1 messages) "  [WARN ] Missing tag"))
     (should (equal (nth 2 messages) "  1 warning(s), 0 error(s)."))))
 
-(ert-deftest ogt-log-summary-with-error ()
-  "Test that `org-grimoire--log-summary' shows errors or warnings if they are present."
-  (org-grimoire--log-reset)
-  (org-grimoire--log :error "Failed to render")
+(ert-deftest ost-log-summary-with-error ()
+  "Test that `org-ssg--log-summary' shows errors or warnings if they are present."
+  (org-ssg--log-reset)
+  (org-ssg--log :error "Failed to render")
   
   (with-captured-messages messages
-    (org-grimoire--log-summary)
+    (org-ssg--log-summary)
     
     (should (= (length messages) 3))
     (should (equal (nth 0 messages) "--- Build Summary ---"))
     (should (equal (nth 1 messages) "  [ERROR] Failed to render"))
     (should (equal (nth 2 messages) "  0 warning(s), 1 error(s)."))))
 
-(ert-deftest ogt-log-summary-with-warn-error ()
-  "Test that `org-grimoire--log-summary' shows errors or warnings if they are present."
-  (org-grimoire--log-reset)
-  (org-grimoire--log :info "Start")
-  (org-grimoire--log :warn "Missing tag")
-  (org-grimoire--log :error "Failed to render")
+(ert-deftest ost-log-summary-with-warn-error ()
+  "Test that `org-ssg--log-summary' shows errors or warnings if they are present."
+  (org-ssg--log-reset)
+  (org-ssg--log :info "Start")
+  (org-ssg--log :warn "Missing tag")
+  (org-ssg--log :error "Failed to render")
   
   (with-captured-messages messages
-    (org-grimoire--log-summary)
+    (org-ssg--log-summary)
     
     (should (= (length messages) 4))
     (should (equal (nth 0 messages) "--- Build Summary ---"))
@@ -244,158 +244,158 @@ Example result:
     (should (equal (nth 3 messages) "  1 warning(s), 1 error(s)."))))
 
 ;; Templates
-(ert-deftest ogt-default-theme-dir ()
-  "Test that `org-grimoire--default-theme-dir' points to the correct theme dir (with and without cfg override)."
-  (with-ogt-config
-    (with-ogt-fixture "template-site"
-      (let ((org-grimoire--package-dir (expand-file-name "../" ogt-base-dir)))
+(ert-deftest ost-default-theme-dir ()
+  "Test that `org-ssg--default-theme-dir' points to the correct theme dir (with and without cfg override)."
+  (with-ost-config
+    (with-ost-fixture "template-site"
+      (let ((org-ssg--package-dir (expand-file-name "../" ost-base-dir)))
         
-        (should (string-suffix-p "themes/default/" (org-grimoire--default-theme-dir)))
+        (should (string-suffix-p "themes/default/" (org-ssg--default-theme-dir)))
         
-        (let ((org-grimoire--config (plist-put org-grimoire--config :default-theme-dir "my-base/")))
-          (should (string-suffix-p "template-site/my-base/" (org-grimoire--default-theme-dir))))))))
+        (let ((org-ssg--config (plist-put org-ssg--config :default-theme-dir "my-base/")))
+          (should (string-suffix-p "template-site/my-base/" (org-ssg--default-theme-dir))))))))
 
-(ert-deftest ogt-resolve-theme-file-test ()
-  "Test that `org-grimoire--resolve-theme-file' returns the correct child or default theme file."
-  (with-ogt-config
-    (with-ogt-fixture "template-site"
-      (let ((org-grimoire--package-dir (expand-file-name "../" ogt-base-dir))
+(ert-deftest ost-resolve-theme-file-test ()
+  "Test that `org-ssg--resolve-theme-file' returns the correct child or default theme file."
+  (with-ost-config
+    (with-ost-fixture "template-site"
+      (let ((org-ssg--package-dir (expand-file-name "../" ost-base-dir))
             (user-theme (expand-file-name "themes/custom-theme/" default-directory)))
         
         ;; Returns a user theme file
-        (should (string-prefix-p user-theme (org-grimoire--resolve-theme-file "post.html" user-theme)))
+        (should (string-prefix-p user-theme (org-ssg--resolve-theme-file "post.html" user-theme)))
         
         ;; Returns a default theme file if file is not present in user theme.
-        (should (string-match-p "themes/default/tags.html$" (org-grimoire--resolve-theme-file "tags.html" nil)))
+        (should (string-match-p "themes/default/tags.html$" (org-ssg--resolve-theme-file "tags.html" nil)))
         
         ;; File does not exist.
-        (should (equal nil (org-grimoire--resolve-theme-file "missing.html" user-theme)))))))
+        (should (equal nil (org-ssg--resolve-theme-file "missing.html" user-theme)))))))
 
-(ert-deftest ogt-load-template-test ()
-  "Test that `org-grimoire--load-template' correctly loads a template and throws an error if the template does not exist."
-  (with-ogt-config
-    (with-ogt-fixture "template-site"
-      (let ((org-grimoire--package-dir (expand-file-name "../" ogt-base-dir))
+(ert-deftest ost-load-template-test ()
+  "Test that `org-ssg--load-template' correctly loads a template and throws an error if the template does not exist."
+  (with-ost-config
+    (with-ost-fixture "template-site"
+      (let ((org-ssg--package-dir (expand-file-name "../" ost-base-dir))
             (user-theme (expand-file-name "themes/custom-theme/" default-directory)))
         
-        (should (equal "<h1>Index</h1>" (string-trim (org-grimoire--load-template "index" user-theme))))
+        (should (equal "<h1>Index</h1>" (string-trim (org-ssg--load-template "index" user-theme))))
 
         ;; error case - template does not exist
-        (org-grimoire--log-reset)
+        (org-ssg--log-reset)
         (with-captured-messages messages
-          (let ((result (org-grimoire--load-template "not-existing-template" user-theme)))
+          (let ((result (org-ssg--load-template "not-existing-template" user-theme)))
             (should (equal result "<!-- Template not found: not-existing-template.html -->"))
-            (should (equal org-grimoire--log '((:error . "Template not found: not-existing-template.html"))))
+            (should (equal org-ssg--log '((:error . "Template not found: not-existing-template.html"))))
             (should (equal (nth 0 messages) "[ERROR] Template not found: not-existing-template.html"))))))))
 
-(ert-deftest ogt-process-includes ()
-  "Tests that `org-grimoire--process-includes' correctly includes file content in another file."
-  (with-ogt-config
-  (with-ogt-fixture "template-site"
-    (let ((org-grimoire--package-dir (expand-file-name "../" ogt-base-dir))
+(ert-deftest ost-process-includes ()
+  "Tests that `org-ssg--process-includes' correctly includes file content in another file."
+  (with-ost-config
+  (with-ost-fixture "template-site"
+    (let ((org-ssg--package-dir (expand-file-name "../" ost-base-dir))
           (user-theme (expand-file-name "themes/custom-theme/" default-directory)))
       
       ;; include an existing file
       (let* ((template "Before -> {{include post.html}} <- After")
-             (result (org-grimoire--process-includes template user-theme)))
+             (result (org-ssg--process-includes template user-theme)))
         (should (string-match-p "<- After" result))
         (should-not (string-match-p "{{include" result)))
       
       ;; missing Include
-      (org-grimoire--log-reset)
+      (org-ssg--log-reset)
       (with-captured-messages messages
         (let* ((template "Header {{include missing.html}} Footer")
-               (result (org-grimoire--process-includes template user-theme)))
+               (result (org-ssg--process-includes template user-theme)))
           
           (should (equal result "Header  Footer"))
           (should (equal (nth 0 messages) "[ERROR] Include not found: missing.html"))
-          (should (equal org-grimoire--log '((:error . "Include not found: missing.html"))))))))))
+          (should (equal org-ssg--log '((:error . "Include not found: missing.html"))))))))))
 
-(ert-deftest ogt-render-template ()
-  "Tests that `org-grimoire--render-template' correctly replaces {{variable}}."
-  (with-ogt-config
-    (with-ogt-fixture "template-site"
-      (let ((org-grimoire--package-dir (expand-file-name "../" ogt-base-dir))
+(ert-deftest ost-render-template ()
+  "Tests that `org-ssg--render-template' correctly replaces {{variable}}."
+  (with-ost-config
+    (with-ost-fixture "template-site"
+      (let ((org-ssg--package-dir (expand-file-name "../" ost-base-dir))
             (user-theme (expand-file-name "themes/custom-theme/" default-directory))
             (template "<h1>{{title}}</h1><p>{{content}}</p>")
             (vars '(:title "Test" :content "Inhalt")))
         
-        (should (equal (org-grimoire--render-template template vars user-theme)
+        (should (equal (org-ssg--render-template template vars user-theme)
                        "<h1>Test</h1><p>Inhalt</p>"))))))
 
-(ert-deftest ogt-wrap-base ()
-  "Tests that `org-grimoire--wrap-base' correctly loads the base template theme."
-  (with-ogt-config
-    (with-ogt-fixture "template-site"
-      (let* ((org-grimoire--package-dir (expand-file-name "../" ogt-base-dir))
+(ert-deftest ost-wrap-base ()
+  "Tests that `org-ssg--wrap-base' correctly loads the base template theme."
+  (with-ost-config
+    (with-ost-fixture "template-site"
+      (let* ((org-ssg--package-dir (expand-file-name "../" ost-base-dir))
              (user-theme (expand-file-name "themes/custom-theme/" default-directory)))
         
-        (let ((result (org-grimoire--wrap-base "<p>Post</p>" "Mein Post")))
+        (let ((result (org-ssg--wrap-base "<p>Post</p>" "Mein Post")))
           (should (string-match-p "Mein Post" result))
           (should (string-match-p "<p>Post</p>" result)))))))
 
-(ert-deftest ogt-wrap-base-custom-vars-test ()
-  "Tests that `org-grimoire--wrap-base' correctly inserts custom variables."
-  (let ((org-grimoire--config (list :site-title "My Blog"
+(ert-deftest ost-wrap-base-custom-vars-test ()
+  "Tests that `org-ssg--wrap-base' correctly inserts custom variables."
+  (let ((org-ssg--config (list :site-title "My Blog"
                                     :theme "dummy-theme"
                                     :my-custom-global "Global variable")))
     
-    (cl-letf (((symbol-function 'org-grimoire--load-template)
+    (cl-letf (((symbol-function 'org-ssg--load-template)
                (lambda (name theme)
                  (should (equal name "base"))
                  (should (equal theme "dummy-theme"))
                  "<body>{{content}} | {{my-custom-global}} | {{page-var}}</body>")))
       
       (let* ((extra-vars '(:page-var "local variable"))
-             (result (org-grimoire--wrap-base "Text" "Titel" nil extra-vars)))
+             (result (org-ssg--wrap-base "Text" "Titel" nil extra-vars)))
         
         (should (string-search "Text | Global variable | local variable" result))))))
 
-(ert-deftest ogt-wrap-base-title-test ()
-  "Tests that `org-grimoire--wrap-base' correctly sets the site-title & a custom title."
-  (with-ogt-config
+(ert-deftest ost-wrap-base-title-test ()
+  "Tests that `org-ssg--wrap-base' correctly sets the site-title & a custom title."
+  (with-ost-config
     ;; simulate an empty template with just title stuff
-    (cl-letf (((symbol-function 'org-grimoire--load-template)
+    (cl-letf (((symbol-function 'org-ssg--load-template)
                (lambda (_name _theme)
                  "<head><title>{{site-title}} :: {{title}}</title></head><body>{{content}}</body>")))
       
       (let* ((test-title "Emacs SSG!")
              (test-text "<p>My text about emacs SSG.</p>")
-             (result (org-grimoire--wrap-base test-text test-title)))
+             (result (org-ssg--wrap-base test-text test-title)))
         
         (should (string-match-p (format "<title>My Blog :: %s</title>" test-title) result))
         (should (string-match-p (format "<body>%s</body>" test-text) result))))))
 
 ;; File handling
 
-(ert-deftest ogt-copy-static-nil ()
-  "Tests that `org-grimoire--copy-static' does log a warning if src-dir is nil."
-  (with-ogt-temp-dirs (dst-dir)
+(ert-deftest ost-copy-static-nil ()
+  "Tests that `org-ssg--copy-static' does log a warning if src-dir is nil."
+  (with-ost-temp-dirs (dst-dir)
     (with-captured-messages messages
-      (org-grimoire--copy-static nil dst-dir)
+      (org-ssg--copy-static nil dst-dir)
       (should (= (length messages) 1))
       (should (equal (nth 0 messages) "[WARN] Static dir nil does not exist, did not copy any files.")))))
 
-(ert-deftest ogt-copy-static-not-existing ()
-  "Tests that `org-grimoire--copy-static' does log a warning if it should copy from a dir which does not exist."
-  (with-ogt-temp-dirs (dst-dir)
+(ert-deftest ost-copy-static-not-existing ()
+  "Tests that `org-ssg--copy-static' does log a warning if it should copy from a dir which does not exist."
+  (with-ost-temp-dirs (dst-dir)
     (with-captured-messages messages
       
-      (org-grimoire--copy-static "/does/not/exist" dst-dir)
+      (org-ssg--copy-static "/does/not/exist" dst-dir)
 
       (should (= (length messages) 1))
       (should (equal (nth 0 messages) "[WARN] Static dir /does/not/exist does not exist, did not copy any files.")))))
 
-(ert-deftest ogt-copy-static-success ()
-  "Tests that `org-grimoire--copy-static' does correctly copies files if the src and dst dirs exist."
-  (with-ogt-temp-dirs (src-dir dst-dir)
+(ert-deftest ost-copy-static-success ()
+  "Tests that `org-ssg--copy-static' does correctly copies files if the src and dst dirs exist."
+  (with-ost-temp-dirs (src-dir dst-dir)
       (with-captured-messages messages
     (let ((sub-dir (expand-file-name "css" src-dir)))
       (make-directory sub-dir t)
       (write-region "hello" nil (expand-file-name "test.txt" src-dir))
       (write-region "body { color: red; }" nil (expand-file-name "style.css" sub-dir)))
 
-    (org-grimoire--copy-static src-dir dst-dir)
+    (org-ssg--copy-static src-dir dst-dir)
 
     (should (= (length messages) 1))
     (should (equal (nth 0 messages) (format "[INFO] Copied 2 static file(s) to %s." dst-dir))))
@@ -403,124 +403,124 @@ Example result:
     (should (file-exists-p (expand-file-name "test.txt" dst-dir)))
     (should (file-exists-p (expand-file-name "css/style.css" dst-dir)))))
 
-(ert-deftest ogt-copy-theme-static-no-static-folder ()
-  "Tests that `org-grimoire--copy-static' does not call copy-static if no static dir is in theme-dir."
-  (with-ogt-temp-dirs (out-dir theme-dir)
+(ert-deftest ost-copy-theme-static-no-static-folder ()
+  "Tests that `org-ssg--copy-static' does not call copy-static if no static dir is in theme-dir."
+  (with-ost-temp-dirs (out-dir theme-dir)
     
-    (cl-letf (((symbol-function 'org-grimoire--copy-static)
+    (cl-letf (((symbol-function 'org-ssg--copy-static)
                (lambda (_src _dst)
-                 (ert-fail "org-grimoire--copy-static called with not existing folder!"))))
+                 (ert-fail "org-ssg--copy-static called with not existing folder!"))))
       
-      (org-grimoire--copy-theme-static out-dir theme-dir))))
+      (org-ssg--copy-theme-static out-dir theme-dir))))
 
-(ert-deftest ogt-copy-theme-static-success ()
-  "Tests that `org-grimoire--copy-static' does correctly copy a static folder in theme-dir."
-  (with-ogt-temp-dirs (theme-dir dst-dir)
+(ert-deftest ost-copy-theme-static-success ()
+  "Tests that `org-ssg--copy-static' does correctly copy a static folder in theme-dir."
+  (with-ost-temp-dirs (theme-dir dst-dir)
     (let ((theme-static (expand-file-name "static" theme-dir))
           (was-called nil))
       (make-directory theme-static t)
-      (cl-letf (((symbol-function 'org-grimoire--copy-static)
+      (cl-letf (((symbol-function 'org-ssg--copy-static)
                  (lambda (src dst)
                    (setq was-called t)
                    (should (equal src theme-static))
                    (should (equal dst (expand-file-name "static" dst-dir))))))
 
-        (org-grimoire--copy-theme-static dst-dir theme-dir)
+        (org-ssg--copy-theme-static dst-dir theme-dir)
         (should was-called)))))
 
 ;;; Collect
 
-(ert-deftest ogt-extract-keyword-nil ()
-  "Tests that `org-grimoire--extract-keyword' correctly finds #+KEYWORDS."
+(ert-deftest ost-extract-keyword-nil ()
+  "Tests that `org-ssg--extract-keyword' correctly finds #+KEYWORDS."
   (with-temp-buffer
     (insert "#+DATE: 2023-10-01\n#+DRAFT: t\nTITLE: this is just in text.")
     (org-mode)
     (let ((ast (org-element-parse-buffer)))
-      (should (equal (org-grimoire--extract-keyword ast "TITLE") nil)))))
+      (should (equal (org-ssg--extract-keyword ast "TITLE") nil)))))
 
-(ert-deftest ogt-extract-keyword-success ()
-  "Tests that `org-grimoire--extract-keyword' correctly finds #+KEYWORDS."
+(ert-deftest ost-extract-keyword-success ()
+  "Tests that `org-ssg--extract-keyword' correctly finds #+KEYWORDS."
   (with-temp-buffer
     (insert "#+TITLE: Hello World\n#+DATE: 2023-10-01\n#+DRAFT: t")
     (org-mode)
     (let ((ast (org-element-parse-buffer)))
-      (should (equal (org-grimoire--extract-keyword ast "TITLE") "Hello World"))
-      (should (equal (org-grimoire--extract-keyword ast "DRAFT") "t"))
-      (should (null (org-grimoire--extract-keyword ast "MISSING"))))))
+      (should (equal (org-ssg--extract-keyword ast "TITLE") "Hello World"))
+      (should (equal (org-ssg--extract-keyword ast "DRAFT") "t"))
+      (should (null (org-ssg--extract-keyword ast "MISSING"))))))
 
-(ert-deftest ogt-reading-time-from-ast-success ()
+(ert-deftest ost-reading-time-from-ast-success ()
   "Tests the reading time calculation based on word count."
   (with-temp-buffer
     (insert "#+TITLE: Ignore this completely, longer title, ...\nOne two three four five six seven eight nine ten.")
     (org-mode)
     (let ((ast (org-element-parse-buffer)))
       ;; 10 words / 200 WPM roundet to 0 -> 0 min
-      (should (equal (org-grimoire--reading-time-from-ast ast) "0 min read"))
+      (should (equal (org-ssg--reading-time-from-ast ast) "0 min read"))
       ;; 10 words / 19 WPM roundet to 1 -> 1 min
-      (should (equal (org-grimoire--reading-time-from-ast ast 19) "1 min read"))
+      (should (equal (org-ssg--reading-time-from-ast ast 19) "1 min read"))
       ;; 10 words / 20 WPM roundet to 0 -> 0 min
-      (should (equal (org-grimoire--reading-time-from-ast ast 20) "0 min read"))
+      (should (equal (org-ssg--reading-time-from-ast ast 20) "0 min read"))
       ;; 20 words / 2 WPM -> = 5 Min)
-      (should (equal (org-grimoire--reading-time-from-ast ast 2) "5 min read")))))
+      (should (equal (org-ssg--reading-time-from-ast ast 2) "5 min read")))))
 
-(ert-deftest ogt-reading-time-from-ast-zero-words ()
+(ert-deftest ost-reading-time-from-ast-zero-words ()
   "Tests the reading time calculation based on word count."
   (with-temp-buffer
     (insert "")
     (org-mode)
     (let ((ast (org-element-parse-buffer)))
-      (should (equal (org-grimoire--reading-time-from-ast ast 1) "0 min read")))))
+      (should (equal (org-ssg--reading-time-from-ast ast 1) "0 min read")))))
 
 ;;; --- Utility Tests ---
 
-(ert-deftest ogt-file-to-slug ()
-  "Tests that `org-grimoire--file-to-slug' strips path and extension."
-  (should (equal (org-grimoire--file-to-slug "/var/www/site/my-cool-post.org") "my-cool-post"))
-  (should (equal (org-grimoire--file-to-slug "just_a-name.org") "just_a-name")))
+(ert-deftest ost-file-to-slug ()
+  "Tests that `org-ssg--file-to-slug' strips path and extension."
+  (should (equal (org-ssg--file-to-slug "/var/www/site/my-cool-post.org") "my-cool-post"))
+  (should (equal (org-ssg--file-to-slug "just_a-name.org") "just_a-name")))
 
-(ert-deftest ogt-parse-tags ()
-  "Tests that `org-grimoire--parse-tags' parses various tag formats in addition to the default FILETAGS format."
+(ert-deftest ost-parse-tags ()
+  "Tests that `org-ssg--parse-tags' parses various tag formats in addition to the default FILETAGS format."
   ;; the actual correct one
-  (should (equal (org-grimoire--parse-tags ":elisp:emacs:org:") '("elisp" "emacs" "org")))
+  (should (equal (org-ssg--parse-tags ":elisp:emacs:org:") '("elisp" "emacs" "org")))
   ;; with fallbacks
-  (should (equal (org-grimoire--parse-tags "elisp:emacs:org") '("elisp" "emacs" "org")))
-  (should (equal (org-grimoire--parse-tags "elisp, emacs org") '("elisp" "emacs" "org")))
-  (should (equal (org-grimoire--parse-tags "elisp emacs org") '("elisp" "emacs" "org")))
-  (should (equal (org-grimoire--parse-tags ":singleTag:") '("singleTag")))
-  (should (equal (org-grimoire--parse-tags "singleTag,") '("singleTag")))
-  (should (equal (org-grimoire--parse-tags "singleTag, ") '("singleTag")))
-  (should (equal (org-grimoire--parse-tags "singleTag") '("singleTag")))
-  (should (null (org-grimoire--parse-tags nil))))
+  (should (equal (org-ssg--parse-tags "elisp:emacs:org") '("elisp" "emacs" "org")))
+  (should (equal (org-ssg--parse-tags "elisp, emacs org") '("elisp" "emacs" "org")))
+  (should (equal (org-ssg--parse-tags "elisp emacs org") '("elisp" "emacs" "org")))
+  (should (equal (org-ssg--parse-tags ":singleTag:") '("singleTag")))
+  (should (equal (org-ssg--parse-tags "singleTag,") '("singleTag")))
+  (should (equal (org-ssg--parse-tags "singleTag, ") '("singleTag")))
+  (should (equal (org-ssg--parse-tags "singleTag") '("singleTag")))
+  (should (null (org-ssg--parse-tags nil))))
 
-(ert-deftest ogt-normalize-boolean ()
-  "Tests that `org-grimoire--normalize-boolean' normalizes t, True and yes to boolean t."
-  (should (equal (org-grimoire--normalize-boolean "t") t))
-  (should (equal (org-grimoire--normalize-boolean "T") t))
-  (should (equal (org-grimoire--normalize-boolean "True") t))
-  (should (equal (org-grimoire--normalize-boolean "true") t))
-  (should (equal (org-grimoire--normalize-boolean "TRUE") t))
-  (should (equal (org-grimoire--normalize-boolean "YES") t))
-  (should (equal (org-grimoire--normalize-boolean "yes") t))
+(ert-deftest ost-normalize-boolean ()
+  "Tests that `org-ssg--normalize-boolean' normalizes t, True and yes to boolean t."
+  (should (equal (org-ssg--normalize-boolean "t") t))
+  (should (equal (org-ssg--normalize-boolean "T") t))
+  (should (equal (org-ssg--normalize-boolean "True") t))
+  (should (equal (org-ssg--normalize-boolean "true") t))
+  (should (equal (org-ssg--normalize-boolean "TRUE") t))
+  (should (equal (org-ssg--normalize-boolean "YES") t))
+  (should (equal (org-ssg--normalize-boolean "yes") t))
   ;; Negatives
-  (should (equal (org-grimoire--normalize-boolean "no") nil))
-  (should (equal (org-grimoire--normalize-boolean "false") nil))
+  (should (equal (org-ssg--normalize-boolean "no") nil))
+  (should (equal (org-ssg--normalize-boolean "false") nil))
   ;; Default Value Handling
-  (should (equal (org-grimoire--normalize-boolean nil 'my-default) 'my-default))
-  (should (equal (org-grimoire--normalize-boolean nil t) t)))
+  (should (equal (org-ssg--normalize-boolean nil 'my-default) 'my-default))
+  (should (equal (org-ssg--normalize-boolean nil t) t)))
 
-(ert-deftest ogt-infer-type ()
-  "Tests that `org-grimoire--infer-type' inferrs the post type from the immediate subdirectory of source."
-  (should (equal (org-grimoire--infer-type "/source/blog/my-post.org" "/source/") "blog"))
-  (should (equal (org-grimoire--infer-type "/source/blog/2026/my-post.org" "/source/") "blog"))
-  (should (equal (org-grimoire--infer-type "/source/pages/about.org" "/source/") "pages"))
+(ert-deftest ost-infer-type ()
+  "Tests that `org-ssg--infer-type' inferrs the post type from the immediate subdirectory of source."
+  (should (equal (org-ssg--infer-type "/source/blog/my-post.org" "/source/") "blog"))
+  (should (equal (org-ssg--infer-type "/source/blog/2026/my-post.org" "/source/") "blog"))
+  (should (equal (org-ssg--infer-type "/source/pages/about.org" "/source/") "pages"))
   ;; No subdir, directly source
-  (should (null (org-grimoire--infer-type "/source/index.org" "/source/"))))
+  (should (null (org-ssg--infer-type "/source/index.org" "/source/"))))
 
 ;;; --- Collecting Assets & Files ---
 
-(ert-deftest ogt-collect-assets ()
-  "Tests that `org-grimoire--collect-assets' checks for assets and links are extracted and missing ones log a error."
-  (let* ((temp-dir (make-temp-file "ogt-assets-" t))
+(ert-deftest ost-collect-assets ()
+  "Tests that `org-ssg--collect-assets' checks for assets and links are extracted and missing ones log a error."
+  (let* ((temp-dir (make-temp-file "ost-assets-" t))
          (img-path (expand-file-name "test-image.png" temp-dir))
          (source-file (expand-file-name "post.org" temp-dir)))
     
@@ -536,7 +536,7 @@ Example result:
             (let ((ast (org-element-parse-buffer)))
               
               (with-captured-messages messages
-                (let ((assets (org-grimoire--collect-assets ast source-file)))
+                (let ((assets (org-ssg--collect-assets ast source-file)))
                   
                   ;; Only the existing image ("test-image.png") is kept
                   (should (= (length assets) 1))
@@ -550,9 +550,9 @@ Example result:
       
       (delete-directory temp-dir t))))
 
-(ert-deftest ogt-collect-file ()
-  "Tests that `org-grimoire--collect-file' collects all relevant properties from an file."
-  (let* ((src-dir (make-temp-file "ogt-src-" t))
+(ert-deftest ost-collect-file ()
+  "Tests that `org-ssg--collect-file' collects all relevant properties from an file."
+  (let* ((src-dir (make-temp-file "ost-src-" t))
          (out-dir "/fake-out/")
          (blog-dir (expand-file-name "blog" src-dir))
          (org-file (expand-file-name "test-post.org" blog-dir)))
@@ -562,10 +562,10 @@ Example result:
           (make-directory blog-dir t)
           (write-region "#+TITLE: My Post\n#+DATE: 2023-11-11\n#+FILETAGS: :emacs:lisp:\nHello!" nil org-file)
           
-          (cl-letf (((symbol-function 'org-grimoire--config-get)
+          (cl-letf (((symbol-function 'org-ssg--config-get)
                      (lambda (key) (eq key :reading-time))))
             
-            (let ((post (org-grimoire--collect-file org-file src-dir out-dir)))
+            (let ((post (org-ssg--collect-file org-file src-dir out-dir)))
               (should (equal (plist-get post :title) "My Post"))
               (should (equal (plist-get post :date) "2023-11-11"))
               (should (equal (plist-get post :type) "blog"))  ;; got from blog folder
@@ -580,20 +580,20 @@ Example result:
 
 ;;; --- Pipeline Tests (Collecting many & Sorting) ---
 
-(ert-deftest ogt-collect ()
-  "Tests that `org-grimoire--collect' collects all valid files, ignoring drafts and typeless files."
+(ert-deftest ost-collect ()
+  "Tests that `org-ssg--collect' collects all valid files, ignoring drafts and typeless files."
   (cl-letf (((symbol-function 'directory-files-recursively)
              (lambda (_dir _regex) '("file1.org" "file2.org" "file3.org")))
             
             ;; return faked plists
-            ((symbol-function 'org-grimoire--collect-file)
+            ((symbol-function 'org-ssg--collect-file)
              (lambda (f _s _o)
                (cond ((equal f "file1.org") '(:title "Valid Post" :type "blog" :draft nil))
                      ((equal f "file2.org") '(:title "Draft Post" :type "blog" :draft t))
                      ((equal f "file3.org") '(:title "Typeless"   :type nil    :draft nil))))))
     
     (with-captured-messages messages
-      (let ((posts (org-grimoire--collect "/src" "/out")))
+      (let ((posts (org-ssg--collect "/src" "/out")))
         
         ;; Only file1.org should be there
         (should (= (length posts) 1))
@@ -608,15 +608,15 @@ Example result:
         (should (string-match-p "\\[WARN ?\\]" (nth 1 messages)))
         (should (string-search "No type directory, skipping: file3.org" (nth 1 messages)))))))
 
-(ert-deftest ogt-sort-posts-by-date ()
-  "Tests that `org-grimoire--sort-posts-by-date' sorts posts by date from newest to oldest."
+(ert-deftest ost-sort-posts-by-date ()
+  "Tests that `org-ssg--sort-posts-by-date' sorts posts by date from newest to oldest."
   (let* ((post-old '(:title "Old" :date "2020-01-01"))
          (post-new '(:title "New" :date "2023-12-12"))
          (post-mid '(:title "Mid" :date "2022-05-05"))
          (post-nil '(:title "NoDate" :date nil))
          (posts (list post-old post-nil post-new post-mid)))
     
-    (let ((sorted (org-grimoire--sort-posts-by-date posts)))
+    (let ((sorted (org-ssg--sort-posts-by-date posts)))
       (should (equal (plist-get (nth 0 sorted) :title) "New"))
       (should (equal (plist-get (nth 1 sorted) :title) "Mid"))
       (should (equal (plist-get (nth 2 sorted) :title) "Old"))
@@ -624,14 +624,14 @@ Example result:
 
 ;;; --- Rendering Tests ---
 
-(ert-deftest ogt-org-to-html-successfull ()
-  "Tests that `org-grimoire--org-to-html' successfully exports Org syntax to HTML body."
-  (let* ((temp-file (make-temp-file "ogt-export-" nil ".org")))
+(ert-deftest ost-org-to-html-successfull ()
+  "Tests that `org-ssg--org-to-html' successfully exports Org syntax to HTML body."
+  (let* ((temp-file (make-temp-file "ost-export-" nil ".org")))
     (unwind-protect
         (progn
           (write-region "Hello *bold* and /italic/." nil temp-file)
           
-          (let ((html (org-grimoire--org-to-html temp-file)))
+          (let ((html (org-ssg--org-to-html temp-file)))
             (should (string-match-p "Hello" html))
             (should (or (string-match-p "<b>bold</b>" html)
                         (string-match-p "<strong>bold</strong>" html)))
@@ -639,60 +639,60 @@ Example result:
             (should-not (string-match-p "<head>" html))))
       (delete-file temp-file))))
 
-(ert-deftest ogt-tags-html-successfull ()
-  "Tests that `org-grimoire--tags-html' creates correct links to tags inside a div with the correct classnames."
+(ert-deftest ost-tags-html-successfull ()
+  "Tests that `org-ssg--tags-html' creates correct links to tags inside a div with the correct classnames."
 
   ;; mock to only downcase as it is not important here.
-  (cl-letf (((symbol-function 'org-grimoire--tag-to-slug) #'downcase))
-    (let ((html (org-grimoire--tags-html '("Emacs" "Lisp"))))
-      (should (string-search "<div class=\"grimoire-tags\">" html))
+  (cl-letf (((symbol-function 'org-ssg--tag-to-slug) #'downcase))
+    (let ((html (org-ssg--tags-html '("Emacs" "Lisp"))))
+      (should (string-search "<div class=\"ssg-tags\">" html))
       ;; check slug + correct name
-      (should (string-search "<a class=\"grimoire-tag\" href=\"/tags/emacs.html\">Emacs</a>" html))
-      (should (string-search "<a class=\"grimoire-tag\" href=\"/tags/lisp.html\">Lisp</a>" html)))))
+      (should (string-search "<a class=\"ssg-tag\" href=\"/tags/emacs.html\">Emacs</a>" html))
+      (should (string-search "<a class=\"ssg-tag\" href=\"/tags/lisp.html\">Lisp</a>" html)))))
 
-(ert-deftest ogt-tags-html-nil ()
-  "Tests that `org-grimoire--tags-html' returns an empty string if called with no tags."
-  (should (equal (org-grimoire--tags-html nil) "")))
+(ert-deftest ost-tags-html-nil ()
+  "Tests that `org-ssg--tags-html' returns an empty string if called with no tags."
+  (should (equal (org-ssg--tags-html nil) "")))
 
-(ert-deftest ogt-post-site-url-success ()
-  "Tests that `org-grimoire--post-site-url' returns the correct root-relative URL."
-  (cl-letf (((symbol-function 'org-grimoire--config-get)
+(ert-deftest ost-post-site-url-success ()
+  "Tests that `org-ssg--post-site-url' returns the correct root-relative URL."
+  (cl-letf (((symbol-function 'org-ssg--config-get)
              (lambda (key)
                (if (eq key :output) "/var/www/public/" nil))))
     
     (let ((post '(:output "/var/www/public/blog/my-post.html")))
-      (should (equal (org-grimoire--post-site-url post) "/blog/my-post.html")))))
+      (should (equal (org-ssg--post-site-url post) "/blog/my-post.html")))))
 
-(ert-deftest ogt-render-post ()
+(ert-deftest ost-render-post ()
   "Tests the orchestration of templates and HTML conversion for a single post."
 
   ;; mock everything to just test render-post
-  (cl-letf (((symbol-function 'org-grimoire--config-get) (lambda (_) "dummy-theme"))
-            ((symbol-function 'org-grimoire--load-template) (lambda (_type _theme) "TEMPLATE-STRING"))
-            ((symbol-function 'org-grimoire--org-to-html) (lambda (_src) "<p>Content</p>"))
-            ((symbol-function 'org-grimoire--tags-html) (lambda (_tags) "<tags>"))
-            ((symbol-function 'org-grimoire--post-site-url) (lambda (_p) "/post.html"))
+  (cl-letf (((symbol-function 'org-ssg--config-get) (lambda (_) "dummy-theme"))
+            ((symbol-function 'org-ssg--load-template) (lambda (_type _theme) "TEMPLATE-STRING"))
+            ((symbol-function 'org-ssg--org-to-html) (lambda (_src) "<p>Content</p>"))
+            ((symbol-function 'org-ssg--tags-html) (lambda (_tags) "<tags>"))
+            ((symbol-function 'org-ssg--post-site-url) (lambda (_p) "/post.html"))
             
             ;; Just append the variables in render-template
-            ((symbol-function 'org-grimoire--render-template)
+            ((symbol-function 'org-ssg--render-template)
              (lambda (_tmpl vars _theme)
                (format "Title:%s Content:%s" (plist-get vars :title) (plist-get vars :content))))
             
             ;; Add something via the base wrapper
-            ((symbol-function 'org-grimoire--wrap-base)
+            ((symbol-function 'org-ssg--wrap-base)
              (lambda (inner title url)
                (format "[BASE url=%s] %s" url inner))))
     
     (let* ((post '(:type "blog" :title "My Title" :source "test.org"))
-           (result (org-grimoire--render-post post)))
+           (result (org-ssg--render-post post)))
       
       (should (equal result "[BASE url=/post.html] Title:My Title Content:<p>Content</p>")))))
 
 ;;; --- Write & Asset Pipeline Tests ---
 
-(ert-deftest ogt-copy-assets ()
+(ert-deftest ost-copy-assets ()
   "Tests that assets are copied relative to the source directory."
-  (with-ogt-temp-dirs (src-dir out-dir)
+  (with-ost-temp-dirs (src-dir out-dir)
     (let ((sub-dir (expand-file-name "gfx" src-dir)))
       (make-directory sub-dir t)
       (let* ((img-file (expand-file-name "gfx/image.png" src-dir))
@@ -702,27 +702,27 @@ Example result:
         
         (write-region "binary-data" nil img-file)
         
-        (org-grimoire--copy-assets (list img-file) source-file output-file)
+        (org-ssg--copy-assets (list img-file) source-file output-file)
         
         (should (file-exists-p expected-dest))))))
 
-(ert-deftest ogt-write-post ()
+(ert-deftest ost-write-post ()
   "Tests that a post is rendered, written to disk, and assets are copied."
-  (with-ogt-temp-dirs (out-dir)
+  (with-ost-temp-dirs (out-dir)
     (let* ((out-file (expand-file-name "post.html" out-dir))
            (post `(:output ,out-file :source "dummy.org" :assets ("img.png")))
            (assets-copied nil))
       
-      (cl-letf (((symbol-function 'org-grimoire--render-post)
+      (cl-letf (((symbol-function 'org-ssg--render-post)
                  (lambda (_p) "<html>MOCKED HTML</html>"))
                 
-                ((symbol-function 'org-grimoire--copy-assets)
+                ((symbol-function 'org-ssg--copy-assets)
                  (lambda (assets _src _out)
                    (should (equal assets '("img.png")))
                    (setq assets-copied t))))
         
         (with-captured-messages messages
-          (org-grimoire--write-post post)
+          (org-ssg--write-post post)
           
           (should (file-exists-p out-file))
           (should (equal (with-temp-buffer (insert-file-contents out-file) (buffer-string))
@@ -732,20 +732,20 @@ Example result:
           (should (string-match-p "\\[INFO ?\\]" (nth 0 messages)))
           (should (string-search "Rendered:" (nth 0 messages))))))))
 
-(ert-deftest ogt-render-all ()
+(ert-deftest ost-render-all ()
   "Tests the render loop and ensures errors in single posts don't crash the loop."
   (let ((post-success '(:source "good.org"))
         (post-fail '(:source "bad.org"))
         (render-count 0))
     
-    (cl-letf (((symbol-function 'org-grimoire--write-post)
+    (cl-letf (((symbol-function 'org-ssg--write-post)
                (lambda (post)
                  (cl-incf render-count)
                  (when (equal (plist-get post :source) "bad.org")
                    (error "Simulated rendering error")))))
       
       (with-captured-messages messages
-        (org-grimoire--render-all (list post-success post-fail))
+        (org-ssg--render-all (list post-success post-fail))
         
         (should (= render-count 2))
         
@@ -755,24 +755,24 @@ Example result:
         (should (string-search "Simulated rendering error" (nth 0 messages)))))))
 
 ;; Index and pagination
-(ert-deftest ogt-render-post-item ()
-  "Tests that `org-grimoire--render-post-item' correctly formats a post item."
-  (with-ogt-config
+(ert-deftest ost-render-post-item ()
+  "Tests that `org-ssg--render-post-item' correctly formats a post item."
+  (with-ost-config
     
     ;; 1. Wir definieren leere Variablen, um die Daten "einzufangen"
     (let ((captured-template-name nil)
           (captured-vars nil))
       
-      (cl-letf (((symbol-function 'org-grimoire--post-site-url)
+      (cl-letf (((symbol-function 'org-ssg--post-site-url)
                  (lambda (_p) "/posts/sample.html"))
                 
-                ((symbol-function 'org-grimoire--load-template)
+                ((symbol-function 'org-ssg--load-template)
                  (lambda (name _theme)
                    ;; Wir fangen den Template-Namen ein
                    (setq captured-template-name name)
                    "DUMMY_TEMPLATE"))
                 
-                ((symbol-function 'org-grimoire--render-template)
+                ((symbol-function 'org-ssg--render-template)
                  (lambda (_tmpl vars _theme)
                    (setq captured-vars vars)
                    "FINAL_HTML_RESULT")))
@@ -782,7 +782,7 @@ Example result:
         ;; ==========================================
         (let ((post '(:title "Hello World" :date "2024-01-01" :tags ("org" "lisp") :output "/posts/sample.html")))
           
-          (org-grimoire--render-post-item post "/themes/ogt/")
+          (org-ssg--render-post-item post "/themes/ogt/")
           
           (should (equal captured-template-name "partials/post-item"))
           (should (equal (plist-get captured-vars :title) "Hello World"))
@@ -796,7 +796,7 @@ Example result:
         (let ((post '(:output "/posts/sample.html")))
           (setq captured-vars nil) ;; Reset!
           
-          (org-grimoire--render-post-item post "/themes/ogt/")
+          (org-ssg--render-post-item post "/themes/ogt/")
           
           (should (equal (plist-get captured-vars :title) "Untitled"))
           (should (equal (plist-get captured-vars :date) ""))
@@ -808,23 +808,23 @@ Example result:
         (let ((post '(:title "No Tags" :tags nil :output "/posts/sample.html")))
           (setq captured-vars nil) ;; Reset
           
-          (org-grimoire--render-post-item post "/themes/ogt/")
+          (org-ssg--render-post-item post "/themes/ogt/")
           
           (should (equal (plist-get captured-vars :title) "No Tags"))
           (should (equal (plist-get captured-vars :tags) "")))))))
 
 ;; Tags
-(ert-deftest ogt-collect-tags ()
-  "Test `org-grimoire--collect-tags' builds correct tag-to-post mappings."
+(ert-deftest ost-collect-tags ()
+  "Test `org-ssg--collect-tags' builds correct tag-to-post mappings."
   (let* ((post-a '(:title "Post A" :tags ("emacs" "lisp")))
          (post-b '(:title "Post B" :tags ("lisp" "org-mode")))
          (post-c '(:title "Post C" :tags ("emacs")))
          (posts   (list post-a post-b post-c))
-         (tags    (org-grimoire--collect-tags posts)))
+         (tags    (org-ssg--collect-tags posts)))
     (should (hash-table-p tags))
     (should (equal (gethash "emacs" tags) (list post-c post-a)))
     (should (equal (gethash "lisp"  tags) (list post-b post-a)))
     (should (equal (gethash "org-mode" tags) (list post-b)))))
 
-(provide 'org-grimoire-test)
-;;; org-grimoire-test.el ends here
+(provide 'org-ssg-test)
+;;; org-ssg-test.el ends here
