@@ -242,7 +242,8 @@ Ignores mainly Emacs generated lock / temporary stuff."
   (if (and static-dir (file-exists-p static-dir))
       (let ((count 0))
         (dolist (file (directory-files-recursively static-dir ".*"))
-          (let* ((relative (file-relative-name file static-dir))
+          (let* ((filename (file-name-nondirectory file))
+                 (relative (file-relative-name file static-dir))
                  (dest     (expand-file-name relative output-dir)))
 
             ;; ignore temporary files
@@ -257,7 +258,7 @@ Ignores mainly Emacs generated lock / temporary stuff."
             (setq count (1+ count))))
         (org-grimoire--log :info
                            (format "Copied %d static file(s) to %s." count output-dir)))
-    (org-grimoire--log :warn (format "Static dir %s does not exist, did not copy any files." static-dir))))
+    (org-grimoire--log :warn (format "Static dir %s does not exist, did not copy any files." static-dir)))))
 
 (defun org-grimoire--copy-theme-static (output-dir theme-dir)
   "Copy static files from THEME-DIR into OUTPUT-DIR/static/ if present."
@@ -435,6 +436,24 @@ directly in SOURCE-DIR with no type subdirectory are skipped."
                    (or (plist-get b :date) "")))))
 
 ;;; Render:
+
+(org-link-set-parameters "urlexternal"
+  :export (lambda (path desc backend _info)
+            (when (eq backend 'html)
+              (format "<a href=\"%s\" class=\"with-icon external\">%s</a>"
+                      path (or desc path)))))
+
+(org-link-set-parameters "urltool"
+  :export (lambda (path desc backend _info)
+            (when (eq backend 'html)
+              (format "<a href=\"%s\" class=\"with-icon box\">%s</a>"
+                      path (or desc path)))))
+
+(org-link-set-parameters "btn"
+  :export (lambda (path desc backend _info)
+            (when (eq backend 'html)
+              (format "<a href=\"%s\" class=\"button primary\">%s</a>"
+                      path (or desc path)))))
 
 (defun org-grimoire--org-to-html (filepath)
   "Return the HTML body string produced by exporting the Org file at FILEPATH."
