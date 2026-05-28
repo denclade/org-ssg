@@ -275,6 +275,17 @@ All global configuration variables are also available in the template."
       (when (string= (org-element-property :key el) keyword)
         (org-element-property :value el)))))
 
+(defun org-grimoire--get-excerpt-org (ast)
+  "Return the content of a #+begin_excerpt ... #+end_excerpt block from the AST.
+Returns nil if no such block exists."
+(let ((block (org-element-map ast 'special-block
+                 (lambda (el)
+                   (when (string= (upcase (org-element-property :type el)) "EXCERPT")
+                     el))
+                 nil t)))
+    (when block
+      (org-element-interpret-data (org-element-contents block)))))
+
 (defun org-grimoire--reading-time-from-ast (ast &optional wpm)
   "Return an estimated reading-time string computed from AST.
 WPM is the words-per-minute rate; it defaults to 200."
@@ -344,6 +355,9 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
            (type      (or (when file-type (downcase file-type)) ; prio 1: #+TYPE: in der Datei
                           (cdr (assoc inferred aliases))        ; prio 2: :type-aliases in .grimoire.el
                           inferred))                            ; prio 3: inferer file type
+           (description (org-grimoire--extract-keyword ast "DESCRIPTION"))
+           (excerpt     (or (org-grimoire--get-excerpt-org ast) ; try to extract a summary/excerpt
+                            description))
            (draft    (org-grimoire--normalize-boolean
                       (org-grimoire--extract-keyword ast "DRAFT")))
            (listed   (org-grimoire--normalize-boolean
@@ -410,6 +424,20 @@ directly in SOURCE-DIR with no type subdirectory are skipped."
                    '(:with-toc nil
                      :with-title nil
                      :section-numbers nil))))
+
+(defun org-grimoire--org-string-to-html (org-string)
+  "Return the HTML string produced by exporting ORG-STRING.
+Returns an empty string if ORG-STRING is nil."
+  (if (not org-string)
+      ""
+    (with-temp-buffer
+      (insert org-string)
+      (setq-local tab-width 8)
+      (org-mode)
+      (org-export-as 'html nil nil t
+                     '(:with-toc nil
+                       :with-title nil
+                       :section-numbers nil)))))
 
 (defun org-grimoire--tags-html (tags)
   "Return an HTML string representing TAGS as a linked grimoire-tags div."
@@ -501,13 +529,15 @@ Asset paths are resolved relative to SOURCE-FILE and mirrored in OUTPUT-FILE."
   (let* ((title (or (plist-get post :title) "Untitled"))
          (date  (or (plist-get post :date) ""))
          (tags  (plist-get post :tags))
-         (url   (org-grimoire--post-site-url post)))
+         (url   (org-grimoire--post-site-url post))
+         (excerpt-html (org-grimoire--org-string-to-html (plist-get post :excerpt))))
     (org-grimoire--render-template
      (org-grimoire--load-template "partials/post-item" theme-dir)
      (list :title title
            :url   url
            :date  date
-           :tags  (if tags (string-join tags ", ") ""))
+           :tags  (if tags (string-join tags ", ") "")
+           :excerpt excerpt-html)
      theme-dir)))
 
 (defun org-grimoire--render-post-list (posts theme-dir)
@@ -938,7 +968,7 @@ Resolve :theme relative to the themes/ subdirectory of :base-dir."
 
 ;;;###autoload
 (defun org-grimoire-serve ()
-  "Serve the built site for the project in the current directory."
+  "Serve the built site for the project in the current directory and open it in the browser."
   (interactive)
   (if (not (require 'simple-httpd nil t))
       (user-error "Simple-httpd is not installed")
@@ -946,7 +976,9 @@ Resolve :theme relative to the themes/ subdirectory of :base-dir."
            (output (org-grimoire--config-get :output)))
       (setq httpd-root output)
       (httpd-start)
-      (message "Serving %s at http://localhost:%d" output httpd-port))))
+      (let ((url (format "http://localhost:%d" httpd-port)))
+        (message "Serving %s at %s" output url)
+        (browse-url url)))))
 
 ;;;###autoload
 (defun org-grimoire-init (base-dir base-url site-title)
