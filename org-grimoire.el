@@ -230,6 +230,13 @@ All global configuration variables are also available in the template."
 
 ;;; File Utilities:
 
+(defun org-grimoire--ignored-file-p (filename)
+  "Return non-nil if FILENAME should be ignored.
+Ignores mainly Emacs generated lock / temporary stuff."
+  (or (string-prefix-p ".#" filename)
+      (string-prefix-p "#" filename)
+      (string-suffix-p "~" filename)))
+
 (defun org-grimoire--copy-static (static-dir output-dir)
   "Copy all files from STATIC-DIR to OUTPUT-DIR recursively."
   (if (and static-dir (file-exists-p static-dir))
@@ -237,6 +244,9 @@ All global configuration variables are also available in the template."
         (dolist (file (directory-files-recursively static-dir ".*"))
           (let* ((relative (file-relative-name file static-dir))
                  (dest     (expand-file-name relative output-dir)))
+
+            ;; ignore temporary files
+            (unless (org-grimoire--ignored-file-p filename)
 
             (if (string-match-p "\\.scss\\'" file)
                 (let ((css-dest (concat (file-name-sans-extension dest) ".css")))
@@ -1017,8 +1027,7 @@ EVENT is the list coming from `filenotify'."
   (let* ((file (nth 2 event))
          (filename (file-name-nondirectory file)))
     ;; ignored
-    (unless (or (string-prefix-p "." filename)
-                (string-prefix-p "#" filename))
+    (unless (org-grimoire--ignored-file-p filename)
       
       ;; cancle additional timer
       (when org-grimoire--watch-timer
