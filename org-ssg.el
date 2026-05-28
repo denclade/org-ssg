@@ -958,6 +958,7 @@ Resolve :theme relative to the themes/ subdirectory of :base-dir."
     (unless (and (integerp per-page) (> per-page 0))
       (user-error ":per-page must be a positive integer"))))
 
+;; Build
 ;;;###autoload
 (defun org-ssg-build ()
   "Build the site for the project in the current directory."
@@ -991,6 +992,29 @@ Resolve :theme relative to the themes/ subdirectory of :base-dir."
         (error
          (org-ssg--log :error (error-message-string err))
          (org-ssg--log-summary))))))
+
+;; Deploy
+;;;###autoload
+(defun org-ssg-clean ()
+  "Delete the output directory to remove orphaned files and dev artifacts."
+  (interactive)
+  (let* ((org-ssg--config (org-ssg--load-config))
+         (output (org-ssg--config-get :output)))
+    (when (and output (file-exists-p output))
+      (delete-directory output t)
+      (message "org-ssg: Cleaned output directory %s" output))))
+
+;;;###autoload
+(defun org-ssg-publish ()
+  "Perform a clean production build of the site.
+Stops the watcher (to prevent livereload injection), cleans the output
+directory, and builds the site from scratch."
+  (interactive)
+  (org-ssg-stop-watch)
+  (org-ssg-clean)
+  (org-ssg-build)
+  
+  (message "org-ssg: Production build finished! Ready for deployment."))
 
 ;;;###autoload
 (defun org-ssg-new ()

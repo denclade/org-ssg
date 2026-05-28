@@ -1,183 +1,125 @@
 #+OPTIONS: toc:nil
-* org-grimoire — An Emacs-native Static Site Generator
-[[https://github.com/spiperac/org-grimoire/actions/workflows/melpazoid.yml][https://github.com/spiperac/org-grimoire/actions/workflows/melpazoid.yml/badge.svg]]
-[[https://stable.melpa.org/#/org-grimoire][file:https://stable.melpa.org/packages/org-grimoire-badge.svg]]
+* org-ssg — An Emacs-native Static Site Generator
+[[https://github.com/dencla/org-ssg/actions/workflows/melpazoid.yml][https://github.com/dencla/org-ssg/actions/workflows/melpazoid.yml/badge.svg]]
+file:https://stable.melpa.org/packages/org-grimoire-badge.svg]]
 [[https://melpa.org/#/org-grimoire][file:https://melpa.org/packages/org-grimoire-badge.svg]]
 
-#+ATTR_HTML: :width 128px
-[[file:docs/logo.png]]
+An Emacs static site generator built for speed and a seamless developer experience. 
+Write your content in org-mode, configure everything in a simple local file, and let Emacs handle the rest.
 
-An Emacs static site generator. Write your content in org-mode,
-configure everything in your Emacs config, build with a single command.
+*Features:*
+- **Zero-config defaults:** Auto-detects paths based on project root.
+- **Live-Reload & Watcher:** Save a file in Emacs, see it instantly in the browser.
+- **Native SCSS Support:** Automatically compiles =.scss= files when sass exists on your system.
+- **Rich Excerpts:** Native support for =#+begin_excerpt= blocks.
+- **Custom Link Types:** Beautiful buttons and icon links out of the box.
 
-Just Emacs, org-mode, and HTML templates!
+/Note: This package is a heavily modified fork of the original =org-grimoire= by Strahinja Piperac./
 
 ** Installation
-
-*** MELPA
-
-#+BEGIN_SRC elisp
-M-x package-install RET org-grimoire RET
-#+END_SRC
-
-Or with use package:
-
-#+BEGIN_SRC elisp
-(use-package org-grimoire
-  :ensure t)
-#+END_SRC
-
-*** Manual
 
 Clone the repository and add it to your load path:
 
 #+begin_src elisp
-(add-to-list 'load-path "~/path/to/org-grimoire/")
-(require 'org-grimoire)
+(add-to-list 'load-path "~/path/to/org-ssg/")
+(require 'org-ssg)
 #+end_src
 
 ** Configuration
 
-Add to your Emacs config:
+org-ssg uses a project-local configuration file. Create a file named =.ssg.el= in the root directory of your site. It contains a simple property list (plist):
 
 #+begin_src elisp
-(org-grimoire-setup "my-blog"
-  :base-dir    "~/blog"
-  :base-url    "https://yoursite.com"
-  :site-title  "My Blog"
-  :description "A blog about things"
-  :theme       "mytheme"
-  :per-page    10)
+(:site-title   "My Org Site"
+ :base-url     "https://example.com"
+ :description  "A site built with Emacs"
+ :theme        "default"
+ :type-aliases (("posts" . "post"))
+ :source       ("content" "pages")
+ :static       ("static")
+ :per-page     10)
 #+end_src
 
-org-grimoire derives all paths from =:base-dir= automatically:
+org-ssg automatically derives all essential paths from the directory where =.ssg.el= is located. 
 
-| Key       | Derived path               |
-|-----------+----------------------------|
-| =:source= | =base-dir/content/=        |
-| =:output= | =base-dir/public_html/=    |
-| =:static= | =base-dir/static/=         |
-| =:theme=  | =base-dir/themes/mytheme/= |
+| Key       | Default Derived Path         | Description                                     |
+|-----------+------------------------------+-------------------------------------------------|
+| =:source= | =base-dir/content/=          | Where your .org files live (accepts a list)     |
+| =:output= | =base-dir/public_html/=      | Generated HTML output                           |
+| =:static= | =base-dir/static/=           | Static assets like CSS/JS (accepts a list)      |
+| =:theme=  | =base-dir/themes/default/=   | Path to your HTML templates                     |
 
-You can override any of these individually by passing =:source=,
-=:output=, =:static=, or a full path to =:theme= explicitly.
+** Development Workflow (Live-Reload)
 
-All available setup keys:
+org-ssg provides a modern developer experience right out of Emacs.
 
-| Key            | Required | Description                                        |
-|----------------+----------+----------------------------------------------------|
-| =:base-dir=    | yes      | Root directory of your site                        |
-| =:base-url=    | yes      | Full URL including scheme (e.g. https://example.com) |
-| =:site-title=  | yes      | Global site name, used in feeds and navigation     |
-| =:description= | no       | Site description, used in feeds and meta tags      |
-| =:author=      | no       | Author name, used in Atom feed                     |
-| =:theme=       | no       | Theme name under =base-dir/themes/=                |
-| =:per-page=    | no       | Posts per index page, defaults to 10               |
-| =:reading-time=| no       | Set to =t= to enable reading time estimates        |
+1. Navigate to your project directory.
+2. Run =M-x org-ssg-serve=. This will start a local web server (=http://localhost:8080=) and automatically open your default browser.
+3. Run =M-x org-ssg-watch=. This attaches a file watcher to your source, static, and theme directories.
 
-*** Multiple sites
+Now, whenever you save a file in Emacs, org-ssg will automatically rebuild the site and **hot-reload your browser**. 
+To stop the watcher, run =M-x org-ssg-stop-watch=.
 
-You can configure and build multiple sites independently:
+** Writing Content
 
-#+begin_src elisp
-(org-grimoire-setup "blog"
-  :base-dir   "~/blog"
-  :base-url   "https://blog.com"
-  :site-title "My Blog"
-  :theme      "minimal")
-
-(org-grimoire-setup "company"
-  :base-dir   "~/company-site"
-  :base-url   "https://company.com"
-  :site-title "My Company"
-  :theme      "corporate")
-
-(org-grimoire-build "blog")
-(org-grimoire-build "company")
-#+end_src
-
-** Directory structure
-
-#+begin_src
-blog/
-├── content/             # your org files
-│   ├── post/            # content type inferred from directory name
-│   │   ├── my-post.org
-│   │   └── images/
-│   │       └── screenshot.png
-│   └── page/
-│       └── about.org
-├── themes/
-│   └── mytheme/         # HTML templates
-│       ├── base.html
-│       ├── post.html
-│       ├── page.html
-│       ├── index.html
-│       ├── tags.html
-│       ├── static/      # theme static files (css, fonts, etc.)
-│       └── partials/
-│           ├── navbar.html
-│           ├── footer.html
-│           ├── post-item.html
-│           ├── tag-item.html
-│           ├── tag-index.html
-│           └── pagination.html
-├── static/              # your static files, copied as-is to output/static/
-│   └── css/
-│       └── style.css
-└── public_html/         # generated output
-#+end_src
-
-** Writing content
-
-The content type is inferred from the directory the file lives in.
-A file in =content/post/= is of type =post= and uses =post.html= template.
-A file in =content/page/= is of type =page= and uses =page.html=, and so on.
-You can create any number of content types by adding subdirectories.
+The content type is inferred from the directory the file lives in. For example, a file in =content/posts/= uses the =posts.html= template (unless overridden by =:type-aliases=).
 
 #+begin_src org
-,#+TITLE: My Post
-,#+DATE: 2024-01-15
-,#+TAGS: emacs lisp
+#+TITLE: My Post
+#+DATE: 2026-05-28
+#+TAGS: emacs lisp
+#+CSS: /static/css/gallery.css
+#+JS: /static/js/chart.js
+
+#+begin_excerpt
+This is a rich-text excerpt. It will be rendered on the index page!
+#+end_excerpt
 
 Post content goes here. Full org-mode syntax supported.
 #+end_src
 
 *** Frontmatter keywords
 
-| Keyword    | Description                           | Example              |
-|------------+---------------------------------------+----------------------|
-| =#+TITLE=  | Page title                            | =#+TITLE: My Post=   |
-| =#+DATE=   | Publication date (yyyy-mm-dd)         | =#+DATE: 2024-01-15= |
-| =#+TAGS=   | Space or comma separated list of tags | =#+TAGS: emacs lisp= |
-| =#+DRAFT=  | Set to =t= to exclude from build      | =#+DRAFT: t=         |
-| =#+LISTED= | Set to =nil= to hide from index       | =#+LISTED: nil=      |
+| Keyword       | Description                                  | Example                       |
+|---------------+----------------------------------------------+-------------------------------|
+| =#+TITLE:=    | Page title                                   | =#+TITLE: My Post=            |
+| =#+DATE:=     | Publication date (yyyy-mm-dd)                | =#+DATE: 2026-05-28=          |
+| =#+TYPE:=     | Force a specific template type               | =#+TYPE: page=                |
+| =#+TAGS:=     | Space/comma separated list of tags           | =#+TAGS: emacs lisp=          |
+| =#+EXCERPT:=  | A plain-text summary (fallback for blocks)   | =#+EXCERPT: A short read.=    |
+| =#+CSS:=      | Inject specific CSS into the document <head> | =#+CSS: /static/custom.css=   |
+| =#+JS:=       | Inject specific JS into the document <head>  | =#+JS: /static/script.js=     |
+| =#+DRAFT:=    | Set to =t= to completely exclude from build  | =#+DRAFT: t=                  |
+| =#+LISTED:=   | Set to =nil= to hide from index listings     | =#+LISTED: nil=               |
 
-*** Draft vs Listed
-
-- =#+DRAFT: t= — post is not built at all, completely excluded
-- =#+LISTED: nil= — post is built and accessible via its URL and tag
-  pages, but does not appear on the main index listing. Defaults to
-  =t= if omitted.
-
-*** Images and file links
-
-org-grimoire automatically detects =file:= links in your org files
-and copies referenced files to the output directory, preserving
-relative paths. This means org-download works out of the box:
+*** Custom Links & Buttons
+org-ssg provides custom link types to easily add CSS classes to your inline links:
 
 #+begin_src org
-[[file:images/screenshot.png]]
+[[btn:/download][Download Now]]
+[[urltool:/tools][Toolbox]]
+[[urlexternal:https://github.com][GitHub]]
 #+end_src
+These render as:
+- =<a href="..." class="button primary">=
+- =<a href="..." class="with-icon box">=
+- =<a href="..." class="with-icon external">=
 
-Gets copied from =content/post/images/screenshot.png= to
-=public_html/post/images/screenshot.png= and the relative link works
-in the browser with no extra configuration.
+*** Static Assets & Automatic SCSS
+
+Any file placed in your =static/= directory is copied to =public_html/static/=. 
+
+*Bonus:* If you have a SCSS compiler installed on your system (=sass=, =sassc=, or =node-sass=), org-ssg will automatically compile any =.scss= files to =.css= on the fly. Emacs temporary lockfiles are safely ignored.
+
+You can link them directly in your org files:
+#+begin_src org
+#+CSS: /static/css/style.scss
+#+end_src
+org-ssg will compile it and rewrite the HTML link to point to =style.css=.
 
 ** Templates
 
 *** Base template
-
 =base.html= is the site-wide layout. All pages are wrapped in it.
 
 #+begin_src html
@@ -187,6 +129,8 @@ in the browser with no extra configuration.
   <meta charset="UTF-8">
   <title>{{title}}</title>
   <link rel="stylesheet" href="/static/css/style.css">
+  {{extra-css}}
+  {{extra-js}}
 </head>
 <body>
   {{include partials/navbar.html}}
@@ -196,149 +140,49 @@ in the browser with no extra configuration.
 </html>
 #+end_src
 
-Available placeholders in =base.html=:
+*(Note: ={{extra-css}}= and ={{extra-js}}= are automatically populated by the =#+CSS:= and =#+JS:= keywords).*
 
-| Placeholder      | Description                              |
-|------------------+------------------------------------------|
-| ={{title}}=      | Current page title                       |
-| ={{site-title}}= | Global site title from =:site-title=     |
-| ={{description}}=| Site description from =:description=     |
-| ={{author}}=     | Author from =:author=                    |
-| ={{base-url}}=   | Base URL from =:base-url=                |
-| ={{url}}=        | Root-relative URL of the current page    |
-| ={{content}}=    | Rendered page content                    |
+*** Post Item (Index Lists)
+For list views (like =index.html= or tags), use ={{excerpt}}= to render the summary:
 
-*** Type templates
-
-Each content type maps to its own template file. A file in =content/post/=
-uses =post.html=, a file in =content/page/= uses =page.html=, and so on.
-
-=post.html=:
 #+begin_src html
-<article>
-  <h1>{{title}}</h1>
-  <time>{{date}}</time>
-  {{tags}}
-  <span>{{reading-time}}</span>
-  <div class="content">{{content}}</div>
+<article class="post-item">
+  <h2><a href="{{url}}">{{title}}</a></h2>
+  <div class="excerpt">
+    {{excerpt}}
+  </div>
 </article>
 #+end_src
 
-Available placeholders in type templates:
+*** Available Placeholders
 
-| Placeholder      | Description                              |
-|------------------+------------------------------------------|
-| ={{title}}=      | Post title                               |
-| ={{content}}=    | Rendered HTML content                    |
-| ={{date}}=       | Publication date                         |
-| ={{tags}}=       | Rendered tag links (grimoire-tags div)   |
-| ={{slug}}=       | URL slug derived from filename           |
-| ={{reading-time}}= | Estimated reading time (e.g. "3 min read"), requires =:reading-time t= in setup |
-
-*** Index template
-
-=index.html= is used for the paginated post listing at the site root.
-
-#+begin_src html
-<h1>{{site-title}}</h1>
-<p>{{description}}</p>
-<ul>{{posts}}</ul>
-{{pagination}}
-#+end_src
-
-| Placeholder      | Description                   |
-|------------------+-------------------------------|
-| ={{site-title}}= | Global site title             |
-| ={{description}}=| Site description              |
-| ={{posts}}=      | Generated list of post items  |
-| ={{pagination}}= | Previous/next page navigation |
-
-*** Tags templates
-
-=tags.html= is the tags index at =/tags/index.html=, listing all tags:
-
-#+begin_src html
-<h1>{{title}}</h1>
-<ul>{{tags}}</ul>
-#+end_src
-
-=partials/tag-index.html= is used for individual tag listing pages at
-=/tags/tag-name.html=:
-
-#+begin_src html
-<h1>{{title}}</h1>
-<ul>{{posts}}</ul>
-#+end_src
-
-=partials/tag-item.html= renders a single tag in the tags index:
-
-| Placeholder  | Description              |
-|--------------+--------------------------|
-| ={{name}}=   | Tag name                 |
-| ={{slug}}=   | URL-safe tag slug        |
-| ={{count}}=  | Number of posts with tag |
-
-*** Includes
-
-Any template can include another file using ={{include}}=:
-
-#+begin_src html
-{{include partials/navbar.html}}
-{{include partials/footer.html}}
-#+end_src
-
-Files are resolved relative to your theme directory, with fallback to
-the built-in default theme.
+| Placeholder      | Description                                      |
+|------------------|--------------------------------------------------|
+| ={{title}}=      | Current page title                               |
+| ={{site-title}}= | Global site title from =.ssg.el=                 |
+| ={{content}}=    | Rendered page content                            |
+| ={{excerpt}}=    | Post excerpt (used in lists)                     |
+| ={{url}}=        | Root-relative URL of the current page            |
+| ={{date}}=       | Publication date                                 |
+| ={{tags}}=       | Rendered tag links                               |
+| ={{extra-css}}=  | CSS links injected from =#+CSS:=                 |
+| ={{extra-js}}=   | JS tags injected from =#+JS:=                    |
 
 ** Commands
 
-| Command              | Description                                      |
-|----------------------+--------------------------------------------------|
-| =org-grimoire-init=  | Initialize a new site with boilerplate structure |
-| =org-grimoire-setup= | Register a site configuration                    |
-| =org-grimoire-build= | Build the site                                   |
-| =org-grimoire-new=   | Create a new post interactively                  |
-| =org-grimoire-serve= | Serve the site locally (requires =simple-httpd=) |
-
-*** Building
-
-Run =M-x org-grimoire-build= and enter the site name when prompted, or
-call it directly:
-
-#+begin_src elisp
-(org-grimoire-build "my-blog")
-#+end_src
-
-Output goes to =base-dir/public_html/=. Build log is written to the
-=*Messages*= buffer. Errors in individual files are logged as warnings
-and the build continues, with a summary printed at the end.
-
-*** Starting a new site
-
-Run =M-x org-grimoire-init= to create a new site with a boilerplate
-directory structure, sample post and page, and a config snippet to add
-to your Emacs config.
-
-*** Creating new content
-
-Run =M-x org-grimoire-new= and enter the site name. You will be prompted
-to pick a content type from existing directories, then enter a title and
-tags. The file is created and opened automatically as a draft.
-
-*** Local preview
-
-If you have =simple-httpd= installed, run =M-x org-grimoire-serve= to
-serve your built site at =http://localhost:8080=. =simple-httpd= is not
-a required dependency.
+| Command                 | Description                                      |
+|-------------------------|--------------------------------------------------|
+| =org-ssg-init=          | Initialize a new site with boilerplate structure |
+| =org-ssg-watch=         | Start auto-builder & livereload injector         |
+| =org-ssg-stop-watch=    | Stop the background watcher                      |
+| =org-ssg-serve=         | Serve site locally and open default browser      |
+| =org-ssg-new=           | Create a new post interactively                  |
+| =org-ssg-build=         | Build the site manually (preserves existing)     |
+| =org-ssg-clean=         | Delete the output directory                      |
+| =org-ssg-publish=       | Clean, stop watcher, and build for production    |
 
 ** Feeds
-
-RSS and Atom feeds are automatically generated at =/rss.xml= and
-=/atom.xml= from all published posts.
-
-A sitemap is generated at =/sitemap.xml=.
+RSS and Atom feeds are automatically generated at =/rss.xml= and =/atom.xml= from all published posts. A sitemap is generated at =/sitemap.xml=.
 
 ** License
-
-org-grimoire is free software, released under the GNU General Public
-License version 3 or later. See the =LICENSE= file for details.
+org-ssg is free software, released under the GNU General Public License version 3 or later. See the =LICENSE= file for details. Based on org-grimoire by Strahinja Piperac.
