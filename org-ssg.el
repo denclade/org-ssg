@@ -834,6 +834,7 @@ Uses `org-ssg--global-tags-table` to inject post counts into the title attribute
           (with-temp-buffer
             (insert-file-contents file)
             (goto-char (point-min))
+            ;; use regex instead org AST, as it is faster when iterating through all files
             (while (re-search-forward "^#\\+\\(?:FILE\\)?TAGS:[ \t]*\\(.*\\)" nil t)
               (dolist (t-str (org-ssg--parse-tags (match-string 1)))
                 (puthash t-str t tags)))))))
