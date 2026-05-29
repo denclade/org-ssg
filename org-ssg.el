@@ -430,7 +430,7 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
            (slug     (org-ssg--file-to-slug filepath))
            (css       (org-ssg--extract-keyword-list ast "CSS"))
            (js        (org-ssg--extract-keyword-list ast "JS"))
-
+           (extra-assets (org-ssg--extract-keyword-list ast "ASSETS"))
            (file-dir  (file-name-directory filepath))
            (local-res (delq nil
                             (mapcar (lambda (path)
@@ -442,7 +442,7 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
                                               abs
                                             (org-ssg--log :warn (format "Lokale Datei fehlt: %s in %s" path filepath))
                                             nil))))
-                                    (append css js))))
+                                    (append css js extra-assets))))
            (assets    (append (org-ssg--collect-assets ast filepath) local-res))
            
            (relative (file-relative-name filepath source-dir))
