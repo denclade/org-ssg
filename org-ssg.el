@@ -232,6 +232,9 @@ All global configuration variables are also available in the template."
                                  :title title
                                  :url (or url ""))
                            extra-vars
+                           ;; fallbacks
+                           (list :extra-css ""
+                                 :extra-js  "")
                            org-ssg--config)))
     ;; This is the base function which creates the HTML-Code. included files could also contain {{include ... }}, thus we recursively go through the content, check for includes and resolve them. After new content is added, we go through the file again and check again for new includes. This is somewhat expensive, better solution?
     (let ((html base)
