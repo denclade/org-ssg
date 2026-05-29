@@ -288,6 +288,13 @@ Ignores mainly Emacs generated lock / temporary stuff."
       (org-ssg--log :warn (format "No SCSS compiler found! Can't compile %s" infile))
       (copy-file infile outfile t))))
 
+(defun org-ssg--path-equal-p(path1 path2)
+  "Return non-nil if PATH1 and PATH2 point to the same file / directory."
+  (and path1 path2
+       ;; use file-name-as-directory to normalize e.g. ../public_html and ../public_html/
+       (string-equal (file-name-as-directory (file-truename path1))
+                     (file-name-as-directory (file-truename path2)))))
+
 ;;; Collect:
 
 (defun org-ssg--extract-keyword (ast keyword)
@@ -1056,11 +1063,29 @@ directory, and builds the site from scratch."
       ;; Live reload
       (defservlet org-ssg-livereload "text/plain" ()
         (insert (number-to-string org-ssg--build-version)))
+
+      (org-ssg-watch)
       
       (httpd-start)
       (let ((url (format "http://localhost:%d" httpd-port)))
         (message "Serving %s at %s" output url)
         (browse-url url)))))
+
+;;;###autoload
+(defun org-ssg-stop-serve (&optional force)
+  "Stop serving for the project in the current directory.
+Does NOT stop the server if it is running in another directory, unless FORCE is a non nil value."
+  (interactive "P")
+  (if (and (featurep 'simple-httpd) (httpd-running-p))
+      (let* ((org-ssg--config (org-ssg--load-config))
+             (output (org-ssg--config-get :output)))
+        (if (or force (org-ssg--path-equal-p httpd-root output))
+            (progn
+              (org-ssg-stop-watch)
+              (httpd-stop)
+              (message "org-ssg: Stopped server & watcher"))
+          (message "org-ssg: Server is running on another project. Please stop it there, or use force!")))
+    (message "org-ssg: Server did not run.")))
 
 ;;; File watcher
 (defvar org-ssg--watch-descriptors nil
