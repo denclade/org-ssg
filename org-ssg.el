@@ -279,16 +279,10 @@ Ignores mainly Emacs generated lock / temporary stuff."
 
             ;; ignore temporary files
             (unless (org-ssg--ignored-file-p filename)
-
-              (if (string-match-p "\\.scss\\'" file)
-                  (let ((css-dest (concat (file-name-sans-extension dest) ".css")))
-                    (org-ssg--compile-scss file css-dest))
-                (make-directory (file-name-directory dest) t)
-                (copy-file file dest t))
-              
-              (setq count (1+ count))))
+              (org-ssg--process-asset file dest)
+              (setq count (1+ count)))))
           (org-ssg--log :info
-                        (format "Copied %d static file(s) to %s." count output-dir)))
+                        (format "Copied %d static file(s) to %s." count output-dir))
         (org-ssg--log :warn (format "Static dir %s does not exist, did not copy any files." static-dir)))))
 
 (defun org-ssg--copy-theme-static (output-dir theme-dir)
@@ -297,6 +291,20 @@ Ignores mainly Emacs generated lock / temporary stuff."
          (theme-static (expand-file-name "static" theme)))
     (when (file-exists-p theme-static)
       (org-ssg--copy-static theme-static (expand-file-name "static" output-dir)))))
+
+(defun org-ssg--resolve-css-path (path)
+  "Change .scss extension to .css in PATH.  Leave other paths untouched."
+  (if (string-match-p "\\.scss\\'" path)
+      (concat (file-name-sans-extension path) ".css")
+    path))
+
+(defun org-ssg--process-asset (infile outfile)
+  "Copy INFILE to OUTFILE.  If INFILE is an SCSS file, compile it to CSS instead.
+Automatically creates target directories if they don't exist."
+  (make-directory (file-name-directory outfile) t)
+  (if (string-match-p "\\.scss\\'" infile)
+      (org-ssg--compile-scss infile (org-ssg--resolve-css-path outfile))
+    (copy-file infile outfile t)))
 
 (defun org-ssg--compile-scss (infile outfile)
   "Compile INFILE (SCSS) to OUTFILE (CSS) if a compiler is found on the system."
@@ -555,10 +563,8 @@ Variable output comes from e.g. `org-ssg--collect-file'
          (url       (org-ssg--post-site-url post))
 
          (css-html  (mapconcat (lambda (href)
-                                 (let ((final-href (if (string-match-p "\\.scss\\'" href)
-                                                       (concat (file-name-sans-extension href) ".css")
-                                                     href)))
-                                   (format "<link rel=\"stylesheet\" href=\"%s\">\n  " final-href)))
+                                 (format "<link rel=\"stylesheet\" href=\"%s\">\n  "
+                                         (org-ssg--resolve-css-path href)))
                                (plist-get post :css) ""))
          (js-html   (mapconcat (lambda (src)
                                  (format "<script src=\"%s\" defer></script>\n  " src))
@@ -584,11 +590,7 @@ Asset paths are resolved relative to SOURCE-FILE and mirrored in OUTPUT-FILE."
     (dolist (asset assets)
       (let* ((relative (file-relative-name asset source-dir))
              (dest     (expand-file-name relative output-dir)))
-        (make-directory (file-name-directory dest) t)
-        (if (string-match-p "\\.scss\\'" asset)
-            (let ((css-dest (concat (file-name-sans-extension dest) ".css")))
-              (org-ssg--compile-scss asset css-dest))
-          (copy-file asset dest t))))))
+        (org-ssg--process-asset asset dest)))))
 
 (defun org-ssg--write-post (post)
   "Render POST and write it to its output path."
@@ -1117,7 +1119,10 @@ directory, and builds the site from scratch."
      nil file)
     (find-file file)))
 
-;;; Serve page
+
+
+
+;; Serve page:
 (defvar org-ssg--build-version 0
   "Timestamp of the last successfull build (used for live reload).")
 
