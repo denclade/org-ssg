@@ -69,7 +69,12 @@
 (defvar httpd-root)
 (defvar httpd-port)
 
-;;; Internal State:
+;;; ============================================================================
+;;; Internal state:
+;;; ============================================================================
+
+(defvar org-ssg--build-version 0
+  "Timestamp of the last successfull build (used for live reload).")
 
 (defvar org-ssg--config nil
   "The configuration plist for the currently executing command.
@@ -78,6 +83,15 @@ Bound dynamically; do not set this globally.")
 (defvar org-ssg-config-file ".ssg.el"
   "Name of the project-local configuration file.")
 
+(defvar org-ssg--global-tags-table nil
+  "Hash table of tags with count of associated posts.
+Used to access global tag counts during post rendering.")
+
+(defvar org-ssg--log nil
+  "Accumulated log entries for the current build.
+Each entry is a cons cell (LEVEL . MESSAGE) where LEVEL is one of
+:info, :warn, or :error.")
+
 (defvar org-ssg--package-dir
   (file-name-directory (or load-file-name
                            (when (boundp 'byte-compile-current-file)
@@ -85,7 +99,17 @@ Bound dynamically; do not set this globally.")
                            buffer-file-name))
   "Directory containing org-ssg.el.")
 
-;;; Configuration
+(defvar org-ssg--watch-descriptors nil
+  "List of active file system watchers.")
+
+(defvar org-ssg--watch-timer nil
+  "Timer for debouncing of the build events.
+Debouncing is required as the OS sometimes fires 2-3 events per change."
+  )
+
+;;; ============================================================================
+;;; Configuration:
+;;; ============================================================================
 
 (defun org-ssg--config-get (key)
   "Return the value of KEY from the dynamically bound configuration.
@@ -109,12 +133,67 @@ Throws an error if the configuration is not loaded."
         (user-error "Config file %s must contain a valid property list (plist)" config-file))
       (org-ssg--resolve-config (plist-put config :base-dir base-dir)))))
 
-;;; Build Logger:
+(defun org-ssg--resolve-config (args)
+  "Return a resolved configuration plist derived from ARGS.
+Expand :base-dir and derive :source, :output, and :static when absent.
+Resolve :theme relative to the themes/ subdirectory of :base-dir."
+  (let ((base  (plist-get args :base-dir))
+        (theme (plist-get args :theme))
+        (final args))
+    (when base
+      (setq base (expand-file-name base))
+      (when theme
+        (setq final (plist-put final :theme
+                               (expand-file-name theme
+                                                 (expand-file-name "themes" base)))))
+      
+      (dolist (key '(:source :output))
+        (unless (plist-member final key)
+          (setq final
+                (plist-put final key
+                           (pcase key
+                             (:source (expand-file-name "content" base))
+                             (:output (expand-file-name "public_html" base)))))))
+      
+      (let ((has-static (plist-member final :static))
+            (static-val (plist-get final :static)))
+        (setq final
+              (plist-put final :static
+                         (if (not has-static)
+                             ;; Fallback: no :static cfg
+                             (list (expand-file-name "static" base))
+                           (cond
+                            ;; Single string (one directory)
+                            ((stringp static-val)
+                             (list (expand-file-name static-val base)))
+                            ;; list of strings (0-n directories)
+                            ((listp static-val)
+                             (mapcar (lambda (dir) (expand-file-name dir base)) static-val))
+                            ;; Fallback: nil
+                            (t nil)))))))
+    final))
 
-(defvar org-ssg--log nil
-  "Accumulated log entries for the current build.
-Each entry is a cons cell (LEVEL . MESSAGE) where LEVEL is one of
-:info, :warn, or :error.")
+(defun org-ssg--validate-config (config)
+  "Validate the required fields in CONFIG, signaling a user error if invalid."
+  (let ((source     (plist-get config :source))
+        (output     (plist-get config :output))
+        (base-url   (plist-get config :base-url))
+        (site-title (plist-get config :site-title))
+        (per-page   (or (plist-get config :per-page) 10)))
+    (unless (and source (file-directory-p source))
+      (user-error "Invalid or missing :source directory"))
+    (unless output
+      (user-error "Missing :output directory"))
+    (unless (and base-url (string-match-p "\\`https?://" base-url))
+      (user-error "Missing or invalid :base-url (must start with http/https)"))
+    (unless (and site-title (not (string-empty-p site-title)))
+      (user-error "Missing or empty :site-title"))
+    (unless (and (integerp per-page) (> per-page 0))
+      (user-error ":per-page must be a positive integer"))))
+
+;;; ============================================================================
+;;; Build Logger:
+;;; ============================================================================
 
 (defun org-ssg--log-reset ()
   "Clear the build log."
@@ -146,7 +225,270 @@ LEVEL must be :info, :warn, or :error."
       (message "  %d warning(s), %d error(s)."
                (length warnings) (length errors)))))
 
-;;; Template Engine:
+;;; ============================================================================
+;;; File Utilities
+;;; ============================================================================
+
+(defun org-ssg--ignored-file-p (filename)
+  "Return non-nil if FILENAME should be ignored.
+Ignores mainly Emacs generated lock / temporary stuff."
+  (or (string-prefix-p ".#" filename)
+      (string-prefix-p "#" filename)
+      (string-suffix-p "~" filename)))
+
+(defun org-ssg--resolve-css-path (path)
+  "Change .scss extension to .css in PATH.  Leave other paths untouched."
+  (if (string-match-p "\\.scss\\'" path)
+      (concat (file-name-sans-extension path) ".css")
+    path))
+
+(defun org-ssg--process-asset (infile outfile)
+  "Copy INFILE to OUTFILE.  If INFILE is an SCSS file, compile it to CSS instead.
+Automatically creates target directories if they don't exist."
+  (make-directory (file-name-directory outfile) t)
+  (if (string-match-p "\\.scss\\'" infile)
+      (org-ssg--compile-scss infile (org-ssg--resolve-css-path outfile))
+    (copy-file infile outfile t)))
+
+(defun org-ssg--compile-scss (infile outfile)
+  "Compile INFILE (SCSS) to OUTFILE (CSS) if a compiler is found on the system."
+  (let ((compiler (or (executable-find "sass")
+                      (executable-find "sassc")
+                      (executable-find "node-sass"))))
+    (make-directory (file-name-directory outfile) t)
+    (if compiler
+        (let ((exit-code (call-process compiler nil nil nil infile outfile)))
+          (if (= exit-code 0)
+              (org-ssg--log :info (format "Compiled SCSS: %s" (file-name-nondirectory outfile)))
+            (org-ssg--log :error (format "SCSS compilation failed for %s" infile))))
+      (org-ssg--log :warn (format "No SCSS compiler found! Can't compile %s" infile))
+      (copy-file infile outfile t))))
+
+(defun org-ssg--copy-static (static-dir output-dir)
+  "Copy all files from STATIC-DIR to OUTPUT-DIR recursively."
+  (if (and static-dir (file-exists-p static-dir))
+      (let ((count 0))
+        (dolist (file (directory-files-recursively static-dir ".*"))
+          (let* ((filename (file-name-nondirectory file))
+                 (relative (file-relative-name file static-dir))
+                 (dest     (expand-file-name relative output-dir)))
+
+            ;; ignore temporary files
+            (unless (org-ssg--ignored-file-p filename)
+              (org-ssg--process-asset file dest)
+              (setq count (1+ count)))))
+          (org-ssg--log :info
+                        (format "Copied %d static file(s) to %s." count output-dir))
+        (org-ssg--log :warn (format "Static dir %s does not exist, did not copy any files." static-dir)))))
+
+(defun org-ssg--copy-theme-static (output-dir theme-dir)
+  "Copy static files from THEME-DIR into OUTPUT-DIR/static/ if present."
+  (let* ((theme        (or theme-dir (org-ssg--default-theme-dir)))
+         (theme-static (expand-file-name "static" theme)))
+    (when (file-exists-p theme-static)
+      (org-ssg--copy-static theme-static (expand-file-name "static" output-dir)))))
+
+(defun org-ssg--copy-assets (assets source-file output-file)
+  "Copy ASSETS into the directory of OUTPUT-FILE.
+Asset paths are resolved relative to SOURCE-FILE and mirrored in OUTPUT-FILE."
+  (let ((source-dir (file-name-directory source-file))
+        (output-dir (file-name-directory output-file)))
+    (dolist (asset assets)
+      (let* ((relative (file-relative-name asset source-dir))
+             (dest     (expand-file-name relative output-dir)))
+        (org-ssg--process-asset asset dest)))))
+
+(defun org-ssg--path-equal-p(path1 path2)
+  "Return non-nil if PATH1 and PATH2 point to the same file / directory."
+  (and path1 path2
+       ;; use file-name-as-directory to normalize e.g. ../public_html and ../public_html/
+       (string-equal (file-name-as-directory (file-truename path1))
+                     (file-name-as-directory (file-truename path2)))))
+
+
+;;; ============================================================================
+;;; Org Parsing
+;;; ============================================================================
+
+(defun org-ssg--extract-keyword (ast keyword)
+  "Return the value of KEYWORD from the Org AST."
+  (org-element-map ast 'keyword
+    (lambda (el)
+      (when (string= (org-element-property :key el) keyword)
+        (org-element-property :value el)))
+    nil t))
+
+(defun org-ssg--extract-keyword-list (ast keyword)
+  "Return a list of all values for KEYWORD from the Org AST."
+  (org-element-map ast 'keyword
+    (lambda (el)
+      (when (string= (org-element-property :key el) keyword)
+        (org-element-property :value el)))))
+
+(defun org-ssg--get-excerpt-org (ast)
+  "Return the content of a #+begin_excerpt ... #+end_excerpt block from the AST.
+Returns nil if no such block exists."
+  (let ((block (org-element-map ast 'special-block
+                 (lambda (el)
+                   (when (string= (upcase (org-element-property :type el)) "EXCERPT")
+                     el))
+                 nil t)))
+    (when block
+      (org-element-interpret-data (org-element-contents block)))))
+
+(defun org-ssg--reading-time-from-ast (ast &optional wpm)
+  "Return an estimated reading-time string computed from AST.
+WPM is the words-per-minute rate; it defaults to 200."
+  (let* ((text    (org-element-interpret-data ast))
+         (clean   (replace-regexp-in-string "^#\\+[A-Z_]+:.*$" "" text))
+         (words   (length (split-string clean "\\W+" t)))
+         (minutes (max 0 (round (/ (float words) (or wpm 200))))))
+    ;; TODO: configurable string
+    (format "Lesezeit: %d Min." minutes)))
+
+(defun org-ssg--file-to-slug (filepath)
+  "Return a URL slug derived from FILEPATH."
+  (file-name-sans-extension (file-name-nondirectory filepath)))
+
+(defun org-ssg--parse-tags (tags-string)
+  "Return a list of tags parsed from TAGS-STRING.
+Splits by colons (Org-Mode standard), commas and spaces.
+Empty tags are removed."
+  (when tags-string
+    (split-string tags-string "[:, \t]+" t)))
+
+(defun org-ssg--normalize-boolean (str &optional default)
+  "Return the boolean interpretation of STR.
+Return DEFAULT when STR is nil.
+Treat \"t\", \"true\", and \"yes\" as t; anything else as nil."
+  (if (null str)
+      default
+    (if (member (downcase str) '("t" "true" "yes"))
+        t
+      nil)))
+
+(defun org-ssg--infer-type (filepath source-dir)
+  "Return the post type inferred from FILEPATH relative to SOURCE-DIR.
+The type is the name of the immediate subdirectory of SOURCE-DIR."
+  (let* ((relative (file-relative-name filepath source-dir))
+         (parts    (split-string relative "/")))
+    (when (> (length parts) 1)
+      (car parts))))
+
+;;; ============================================================================
+;;; Collection
+;;; ============================================================================
+
+(defun org-ssg--resolve-local-assets (filepath assets-list)
+  "Return absolute paths for all relative files under FILEPATH in ASSETS-LIST.
+ASSETS-LIST contains lists of e.g. CSS, JS or EXTRA assets."
+  (let ((file-dir (file-name-directory filepath)))
+    (delq nil
+          (mapcar (lambda (path)
+                    (when (and (not (string-prefix-p "/" path))
+                               (not (string-match-p "\\`https?://" path)))
+                      (let ((abs (expand-file-name path file-dir)))
+                        (if (file-exists-p abs)
+                            abs
+                          (org-ssg--log :warn (format "Lokale Datei fehlt: %s in %s" path filepath))
+                          nil))))
+                  assets-list))))
+
+(defun org-ssg--collect-assets (ast source-file)
+  "Return a list of absolute paths for all file: links found in AST.
+Paths are resolved relative to SOURCE-FILE and filtered to those that exist."
+  (let ((source-dir (file-name-directory source-file)))
+    (delq nil
+          (org-element-map ast 'link
+            (lambda (el)
+              (when (string= (org-element-property :type el) "file")
+                (let* ((path     (org-element-property :path el))
+                       (absolute (expand-file-name path source-dir)))
+                  (if (file-exists-p absolute)
+                      absolute
+                    (org-ssg--log :error (format "Asset missing: '%s' referenced in '%s'!"
+                                                 path
+                                                 (file-name-nondirectory source-file)))
+                    nil))))))))
+
+(defun org-ssg--collect-file (filepath source-dir output-dir)
+  "Return a post plist by parsing the Org file at FILEPATH.
+SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
+  (with-temp-buffer
+    (insert-file-contents filepath)
+    (let* ((ast      (org-element-parse-buffer))
+           (title    (org-ssg--extract-keyword ast "TITLE"))
+           (date     (org-ssg--extract-keyword ast "DATE"))
+           (file-type (org-ssg--extract-keyword ast "TYPE"))
+           (inferred  (org-ssg--infer-type filepath source-dir))
+           (aliases   (org-ssg--config-get :type-aliases))
+           (type      (or (when file-type (downcase file-type)) ; prio 1: #+TYPE: in der Datei
+                          (cdr (assoc inferred aliases))        ; prio 2: :type-aliases in .ssg.el
+                          inferred))                            ; prio 3: inferer file type
+           (description (org-ssg--extract-keyword ast "DESCRIPTION"))
+           (excerpt     (or (org-ssg--get-excerpt-org ast) ; try to extract a summary/excerpt
+                            description))
+           (draft    (org-ssg--normalize-boolean
+                      (org-ssg--extract-keyword ast "DRAFT")))
+           (listed   (org-ssg--normalize-boolean
+                      (org-ssg--extract-keyword ast "LISTED") t))
+           (tags     (org-ssg--parse-tags
+                      (or (org-ssg--extract-keyword ast "TAGS")
+                          (org-ssg--extract-keyword ast "FILETAGS"))))
+           (slug     (org-ssg--file-to-slug filepath))
+           (css       (org-ssg--extract-keyword-list ast "CSS"))
+           (js        (org-ssg--extract-keyword-list ast "JS"))
+           (extra-assets (org-ssg--extract-keyword-list ast "ASSETS"))
+           (file-dir  (file-name-directory filepath))
+           (local-res   (org-ssg--resolve-local-assets filepath (append css js extra-assets)))
+           (assets    (append (org-ssg--collect-assets ast filepath) local-res))
+           
+           (relative (file-relative-name filepath source-dir))
+           (output   (expand-file-name
+                      (concat (file-name-sans-extension relative) ".html")
+                      output-dir)))
+      (list :title        title
+            :date         date
+            :type         type
+            :draft        draft
+            :listed       listed
+            :tags         tags
+            :slug         slug
+            :source       filepath
+            :reading-time (when (org-ssg--config-get :reading-time)
+                            (org-ssg--reading-time-from-ast ast))
+            :output       output
+            :assets       assets
+            :css          css
+            :js           js))))
+
+(defun org-ssg--collect (source-dir output-dir)
+  "Return a list of post plists by scanning SOURCE-DIR recursively.
+OUTPUT-DIR is used to compute output paths.  Draft posts and files placed
+directly in SOURCE-DIR with no type subdirectory are skipped."
+  (delq nil
+        (mapcar (lambda (f)
+                  (let ((post (org-ssg--collect-file f source-dir output-dir)))
+                    (cond
+                     ((plist-get post :draft)
+                      (org-ssg--log :info (format "Skipping draft: %s" f))
+                      nil)
+                     ((null (plist-get post :type))
+                      (org-ssg--log :warn (format "No type directory, skipping: %s" f))
+                      nil)
+                     (t post))))
+                (directory-files-recursively source-dir "\\.org$"))))
+
+(defun org-ssg--sort-posts-by-date (posts)
+  "Return POSTS sorted by date, newest first."
+  (sort (copy-sequence posts)
+        (lambda (a b)
+          (string> (or (plist-get a :date) "")
+                   (or (plist-get b :date) "")))))
+
+;;; ============================================================================
+;;; Template Engine & Rendering:
+;;; ============================================================================
 
 (defun org-ssg--default-theme-dir ()
   "Return the path to the default theme.  Read :default-theme-dir from config, falling back to the built-in default."
@@ -220,6 +562,27 @@ Return a cons cell (RESULT . CHANGED-P).  CHANGED-P is non-nil if a replacement 
       )
     (cons new-result changed)))
 
+(defun org-ssg--render-recursive (html vars theme-dir)
+  "Recursively resolve template tags in HTML up to max depth.
+VARS contains the variables which should be used to replace {{key}}.
+THEME-DIR is the current themes dir."
+  (let ((changed t) (depth 0) (max-depth 15))
+    (while (and changed (< depth max-depth))
+      (let ((result (org-ssg--render-template html vars theme-dir)))
+        (setq html (car result)
+              changed (cdr result)
+              depth (1+ depth))))
+    html))
+
+(defun org-ssg--inject-live-reload (html)
+  "Inject live-reload script into HTML if watcher is active."
+  (if (and (boundp 'org-ssg--watch-descriptors) org-ssg--watch-descriptors)
+      (let ((script "\n<script>\n(function(){let v=null;setInterval(()=>{fetch('/org-ssg-livereload').then(r=>r.text()).then(t=>{if(!v)v=t;else if(v!==t)location.reload();}).catch(()=>null);},1000)})();\n</script>\n</body>"))
+        (if (string-match-p "</body>" html)
+            (replace-regexp-in-string "</body>" script html t t)
+          (concat html script)))
+    html))
+
 (defun org-ssg--wrap-base (content title &optional url extra-vars)
   "Return CONTENT wrapped in the base template.
 TITLE and URL are used to fill {{title}} and {{url}}.
@@ -227,7 +590,6 @@ EXTRA-VARS is an optional plist of additional custom variables.
 All global configuration variables are also available in the template."
   (let* ((theme-dir (org-ssg--config-get :theme))
          (base      (org-ssg--load-template "base" theme-dir))
-         
          (all-vars (append (list :content content
                                  :title title
                                  :url (or url ""))
@@ -235,268 +597,13 @@ All global configuration variables are also available in the template."
                            ;; fallbacks
                            (list :extra-css ""
                                  :extra-js  "")
-                           org-ssg--config)))
-    ;; This is the base function which creates the HTML-Code. included files could also contain {{include ... }}, thus we recursively go through the content, check for includes and resolve them. After new content is added, we go through the file again and check again for new includes. This is somewhat expensive, better solution?
-    (let ((html base)
-          (changed t)
-          (depth 0)
-          (max-depth 15))
-      (while (and changed (< depth max-depth))
-        (let ((result-tuple (org-ssg--render-template html all-vars theme-dir)))
-          (setq html  (car result-tuple)
-                changed (cdr result-tuple)
-                depth   (1+ depth))))
+                           org-ssg--config))
+         (rendered  (org-ssg--render-recursive base all-vars theme-dir)))
+    (org-ssg--inject-live-reload rendered)))
 
-      ;; inject live reload, if active watcher is found
-      (if (and (boundp 'org-ssg--watch-descriptors)
-               org-ssg--watch-descriptors)
-          (let ((script "\n<script>
-(function(){let v=null;setInterval(()=>{fetch('/org-ssg-livereload').then(r=>r.text()).then(t=>{if(!v)v=t;else if(v!==t)location.reload();}).catch(()=>null);},1000)})();
-</script>\n</body>"))
-            (if (string-match-p "</body>" html)
-                (replace-regexp-in-string "</body>" script html t t)
-              (concat html script))) ;; Fallback, if </body> is missing
-        ;; If no watcher -> return html
-        html))))
-
-;;; File Utilities:
-
-(defun org-ssg--ignored-file-p (filename)
-  "Return non-nil if FILENAME should be ignored.
-Ignores mainly Emacs generated lock / temporary stuff."
-  (or (string-prefix-p ".#" filename)
-      (string-prefix-p "#" filename)
-      (string-suffix-p "~" filename)))
-
-(defun org-ssg--copy-static (static-dir output-dir)
-  "Copy all files from STATIC-DIR to OUTPUT-DIR recursively."
-  (if (and static-dir (file-exists-p static-dir))
-      (let ((count 0))
-        (dolist (file (directory-files-recursively static-dir ".*"))
-          (let* ((filename (file-name-nondirectory file))
-                 (relative (file-relative-name file static-dir))
-                 (dest     (expand-file-name relative output-dir)))
-
-            ;; ignore temporary files
-            (unless (org-ssg--ignored-file-p filename)
-              (org-ssg--process-asset file dest)
-              (setq count (1+ count)))))
-          (org-ssg--log :info
-                        (format "Copied %d static file(s) to %s." count output-dir))
-        (org-ssg--log :warn (format "Static dir %s does not exist, did not copy any files." static-dir)))))
-
-(defun org-ssg--copy-theme-static (output-dir theme-dir)
-  "Copy static files from THEME-DIR into OUTPUT-DIR/static/ if present."
-  (let* ((theme        (or theme-dir (org-ssg--default-theme-dir)))
-         (theme-static (expand-file-name "static" theme)))
-    (when (file-exists-p theme-static)
-      (org-ssg--copy-static theme-static (expand-file-name "static" output-dir)))))
-
-(defun org-ssg--resolve-css-path (path)
-  "Change .scss extension to .css in PATH.  Leave other paths untouched."
-  (if (string-match-p "\\.scss\\'" path)
-      (concat (file-name-sans-extension path) ".css")
-    path))
-
-(defun org-ssg--process-asset (infile outfile)
-  "Copy INFILE to OUTFILE.  If INFILE is an SCSS file, compile it to CSS instead.
-Automatically creates target directories if they don't exist."
-  (make-directory (file-name-directory outfile) t)
-  (if (string-match-p "\\.scss\\'" infile)
-      (org-ssg--compile-scss infile (org-ssg--resolve-css-path outfile))
-    (copy-file infile outfile t)))
-
-(defun org-ssg--compile-scss (infile outfile)
-  "Compile INFILE (SCSS) to OUTFILE (CSS) if a compiler is found on the system."
-  (let ((compiler (or (executable-find "sass")
-                      (executable-find "sassc")
-                      (executable-find "node-sass"))))
-    (make-directory (file-name-directory outfile) t)
-    (if compiler
-        (let ((exit-code (call-process compiler nil nil nil infile outfile)))
-          (if (= exit-code 0)
-              (org-ssg--log :info (format "Compiled SCSS: %s" (file-name-nondirectory outfile)))
-            (org-ssg--log :error (format "SCSS compilation failed for %s" infile))))
-      (org-ssg--log :warn (format "No SCSS compiler found! Can't compile %s" infile))
-      (copy-file infile outfile t))))
-
-(defun org-ssg--path-equal-p(path1 path2)
-  "Return non-nil if PATH1 and PATH2 point to the same file / directory."
-  (and path1 path2
-       ;; use file-name-as-directory to normalize e.g. ../public_html and ../public_html/
-       (string-equal (file-name-as-directory (file-truename path1))
-                     (file-name-as-directory (file-truename path2)))))
-
-;;; Collect:
-
-(defun org-ssg--extract-keyword (ast keyword)
-  "Return the value of KEYWORD from the Org AST."
-  (org-element-map ast 'keyword
-    (lambda (el)
-      (when (string= (org-element-property :key el) keyword)
-        (org-element-property :value el)))
-    nil t))
-
-(defun org-ssg--extract-keyword-list (ast keyword)
-  "Return a list of all values for KEYWORD from the Org AST."
-  (org-element-map ast 'keyword
-    (lambda (el)
-      (when (string= (org-element-property :key el) keyword)
-        (org-element-property :value el)))))
-
-(defun org-ssg--get-excerpt-org (ast)
-  "Return the content of a #+begin_excerpt ... #+end_excerpt block from the AST.
-Returns nil if no such block exists."
-  (let ((block (org-element-map ast 'special-block
-                 (lambda (el)
-                   (when (string= (upcase (org-element-property :type el)) "EXCERPT")
-                     el))
-                 nil t)))
-    (when block
-      (org-element-interpret-data (org-element-contents block)))))
-
-(defun org-ssg--reading-time-from-ast (ast &optional wpm)
-  "Return an estimated reading-time string computed from AST.
-WPM is the words-per-minute rate; it defaults to 200."
-  (let* ((text    (org-element-interpret-data ast))
-         (clean   (replace-regexp-in-string "^#\\+[A-Z_]+:.*$" "" text))
-         (words   (length (split-string clean "\\W+" t)))
-         (minutes (max 0 (round (/ (float words) (or wpm 200))))))
-    ;; TODO: configurable string
-    (format "Lesezeit: %d Min." minutes)))
-
-(defun org-ssg--file-to-slug (filepath)
-  "Return a URL slug derived from FILEPATH."
-  (file-name-sans-extension (file-name-nondirectory filepath)))
-
-(defun org-ssg--parse-tags (tags-string)
-  "Return a list of tags parsed from TAGS-STRING.
-Splits by colons (Org-Mode standard), commas and spaces.
-Empty tags are removed."
-  (when tags-string
-    (split-string tags-string "[:, \t]+" t)))
-
-(defun org-ssg--collect-assets (ast source-file)
-  "Return a list of absolute paths for all file: links found in AST.
-Paths are resolved relative to SOURCE-FILE and filtered to those that exist."
-  (let ((source-dir (file-name-directory source-file)))
-    (delq nil
-          (org-element-map ast 'link
-            (lambda (el)
-              (when (string= (org-element-property :type el) "file")
-                (let* ((path     (org-element-property :path el))
-                       (absolute (expand-file-name path source-dir)))
-                  (if (file-exists-p absolute)
-                      absolute
-                    (org-ssg--log :error (format "Asset missing: '%s' referenced in '%s'!"
-                                                 path
-                                                 (file-name-nondirectory source-file)))
-                    nil))))))))
-
-(defun org-ssg--normalize-boolean (str &optional default)
-  "Return the boolean interpretation of STR.
-Return DEFAULT when STR is nil.
-Treat \"t\", \"true\", and \"yes\" as t; anything else as nil."
-  (if (null str)
-      default
-    (if (member (downcase str) '("t" "true" "yes"))
-        t
-      nil)))
-
-(defun org-ssg--infer-type (filepath source-dir)
-  "Return the post type inferred from FILEPATH relative to SOURCE-DIR.
-The type is the name of the immediate subdirectory of SOURCE-DIR."
-  (let* ((relative (file-relative-name filepath source-dir))
-         (parts    (split-string relative "/")))
-    (when (> (length parts) 1)
-      (car parts))))
-
-(defun org-ssg--collect-file (filepath source-dir output-dir)
-  "Return a post plist by parsing the Org file at FILEPATH.
-SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
-  (with-temp-buffer
-    (insert-file-contents filepath)
-    (let* ((ast      (org-element-parse-buffer))
-           (title    (org-ssg--extract-keyword ast "TITLE"))
-           (date     (org-ssg--extract-keyword ast "DATE"))
-           (file-type (org-ssg--extract-keyword ast "TYPE"))
-           (inferred  (org-ssg--infer-type filepath source-dir))
-           (aliases   (org-ssg--config-get :type-aliases))
-           (type      (or (when file-type (downcase file-type)) ; prio 1: #+TYPE: in der Datei
-                          (cdr (assoc inferred aliases))        ; prio 2: :type-aliases in .ssg.el
-                          inferred))                            ; prio 3: inferer file type
-           (description (org-ssg--extract-keyword ast "DESCRIPTION"))
-           (excerpt     (or (org-ssg--get-excerpt-org ast) ; try to extract a summary/excerpt
-                            description))
-           (draft    (org-ssg--normalize-boolean
-                      (org-ssg--extract-keyword ast "DRAFT")))
-           (listed   (org-ssg--normalize-boolean
-                      (org-ssg--extract-keyword ast "LISTED") t))
-           (tags     (org-ssg--parse-tags
-                      (or (org-ssg--extract-keyword ast "TAGS")
-                          (org-ssg--extract-keyword ast "FILETAGS"))))
-           (slug     (org-ssg--file-to-slug filepath))
-           (css       (org-ssg--extract-keyword-list ast "CSS"))
-           (js        (org-ssg--extract-keyword-list ast "JS"))
-           (extra-assets (org-ssg--extract-keyword-list ast "ASSETS"))
-           (file-dir  (file-name-directory filepath))
-           (local-res (delq nil
-                            (mapcar (lambda (path)
-                                      ;; if it is an relative file path copy to static
-                                      (when (and (not (string-prefix-p "/" path))
-                                                 (not (string-match-p "\\`https?://" path)))
-                                        (let ((abs (expand-file-name path file-dir)))
-                                          (if (file-exists-p abs)
-                                              abs
-                                            (org-ssg--log :warn (format "Lokale Datei fehlt: %s in %s" path filepath))
-                                            nil))))
-                                    (append css js extra-assets))))
-           (assets    (append (org-ssg--collect-assets ast filepath) local-res))
-           
-           (relative (file-relative-name filepath source-dir))
-           (output   (expand-file-name
-                      (concat (file-name-sans-extension relative) ".html")
-                      output-dir)))
-      (list :title        title
-            :date         date
-            :type         type
-            :draft        draft
-            :listed       listed
-            :tags         tags
-            :slug         slug
-            :source       filepath
-            :reading-time (when (org-ssg--config-get :reading-time)
-                            (org-ssg--reading-time-from-ast ast))
-            :output       output
-            :assets       assets
-            :css          css
-            :js           js))))
-
-(defun org-ssg--collect (source-dir output-dir)
-  "Return a list of post plists by scanning SOURCE-DIR recursively.
-OUTPUT-DIR is used to compute output paths.  Draft posts and files placed
-directly in SOURCE-DIR with no type subdirectory are skipped."
-  (delq nil
-        (mapcar (lambda (f)
-                  (let ((post (org-ssg--collect-file f source-dir output-dir)))
-                    (cond
-                     ((plist-get post :draft)
-                      (org-ssg--log :info (format "Skipping draft: %s" f))
-                      nil)
-                     ((null (plist-get post :type))
-                      (org-ssg--log :warn (format "No type directory, skipping: %s" f))
-                      nil)
-                     (t post))))
-                (directory-files-recursively source-dir "\\.org$"))))
-
-(defun org-ssg--sort-posts-by-date (posts)
-  "Return POSTS sorted by date, newest first."
-  (sort (copy-sequence posts)
-        (lambda (a b)
-          (string> (or (plist-get a :date) "")
-                   (or (plist-get b :date) "")))))
-
-;;; Render:
+;;; ============================================================================
+;;; Org Export overrides & HTML generation
+;;; ============================================================================
 
 (org-link-set-parameters "urlexternal"
                          :export (lambda (path desc backend _info)
@@ -516,18 +623,22 @@ directly in SOURCE-DIR with no type subdirectory are skipped."
                                      (format "<a href=\"%s\" class=\"button primary\">%s</a>"
                                              path (or desc path)))))
 
+(defun org-ssg--export-html-settings ()
+  "Standardize HTML export settings for org-ssg."
+  (setq-local tab-width 8)
+  (org-mode)
+  (org-export-as 'html nil nil t
+                   '(:with-toc nil
+                               :with-title nil
+                               :section-numbers nil)))
+
 (defun org-ssg--org-to-html (filepath)
   "Return the HTML body string produced by exporting the Org file at FILEPATH."
   (with-temp-buffer
     ;; enable relative includes e.g. html-file includes in .orgs
     (setq default-directory (file-name-directory filepath))
     (insert-file-contents filepath)
-    (setq-local tab-width 8)
-    (org-mode)
-    (org-export-as 'html nil nil t
-                   '(:with-toc nil
-                               :with-title nil
-                               :section-numbers nil))))
+    (org-ssg--export-html-settings)))
 
 (defun org-ssg--org-string-to-html (org-string)
   "Return the HTML string produced by exporting ORG-STRING.
@@ -536,12 +647,7 @@ Returns an empty string if ORG-STRING is nil."
       ""
     (with-temp-buffer
       (insert org-string)
-      (setq-local tab-width 8)
-      (org-mode)
-      (org-export-as 'html nil nil t
-                     '(:with-toc nil
-                                 :with-title nil
-                                 :section-numbers nil)))))
+      (org-ssg--export-html-settings))))
 
 (defun org-ssg--post-site-url (post)
   "Return the root-relative URL for POST.
@@ -582,16 +688,6 @@ Variable output comes from e.g. `org-ssg--collect-file'
                         (list :extra-css css-html
                               :extra-js  js-html))))
 
-(defun org-ssg--copy-assets (assets source-file output-file)
-  "Copy ASSETS into the directory of OUTPUT-FILE.
-Asset paths are resolved relative to SOURCE-FILE and mirrored in OUTPUT-FILE."
-  (let ((source-dir (file-name-directory source-file))
-        (output-dir (file-name-directory output-file)))
-    (dolist (asset assets)
-      (let* ((relative (file-relative-name asset source-dir))
-             (dest     (expand-file-name relative output-dir)))
-        (org-ssg--process-asset asset dest)))))
-
 (defun org-ssg--write-post (post)
   "Render POST and write it to its output path."
   (let* ((output (plist-get post :output))
@@ -612,7 +708,9 @@ Asset paths are resolved relative to SOURCE-FILE and mirrored in OUTPUT-FILE."
                                          (plist-get post :source)
                                          (error-message-string err)))))))
 
-;;; Index and Pagination:
+;;; ============================================================================
+;;; Index and Pagination
+;;; ============================================================================
 
 (defun org-ssg--render-post-item (post theme-dir)
   "Return the HTML string for POST rendered as a list item using THEME-DIR."
@@ -706,10 +804,9 @@ POSTS is the list of posts to render on this page."
     (error (org-ssg--log :warn (format "Failed to generate index: %s"
                                        (error-message-string err))))))
 
-;;; Tags:
-(defvar org-ssg--global-tags-table nil
-  "Hash table of tags with count of associated posts.
-Used to access global tag counts during post rendering.")
+;;; ============================================================================
+;;; Tags Handling
+;;; ============================================================================
 
 (defun org-ssg--collect-tags (posts)
   "Return a hash table mapping each tag string to its list of posts from POSTS."
@@ -719,10 +816,47 @@ Used to access global tag counts during post rendering.")
         (puthash tag (cons post (gethash tag tags '())) tags)))
     tags))
 
+(defun org-ssg--get-all-tags (source-dir)
+  "Return a list of all existing tags across all posts in SOURCE-DIR."
+  (let ((tags (make-hash-table :test 'equal)))
+    (when (file-exists-p source-dir)
+      (dolist (file (directory-files-recursively source-dir "\\.org$"))
+        (unless (org-ssg--ignored-file-p (file-name-nondirectory file))
+          (with-temp-buffer
+            (insert-file-contents file)
+            (goto-char (point-min))
+            ;; use regex instead org AST, as it is faster when iterating through all files
+            (while (re-search-forward "^#\\+\\(?:FILE\\)?TAGS:[ \t]*\\(.*\\)" nil t)
+              (dolist (t-str (org-ssg--parse-tags (match-string 1)))
+                (puthash t-str t tags)))))))
+    (hash-table-keys tags)))
+
 (defun org-ssg--tag-to-slug (tag)
   "Return a URL-safe slug for TAG."
   (replace-regexp-in-string "-+" "-"
                             (replace-regexp-in-string "[^a-z0-9]" "-" (downcase tag))))
+
+(defun org-ssg--tags-html (tags)
+  "Return an HTML string representing TAGS as a linked ssg-tags div.
+Uses `org-ssg--global-tags-table` to inject post counts into the title attribute."
+  (if tags
+      (concat "<div class=\"ssg-tags\">"
+              (mapconcat
+               (lambda (tag)
+                 (let* ((count (if org-ssg--global-tags-table
+                                   (length (gethash tag org-ssg--global-tags-table))
+                                 0))
+                        (single-p (= count 1))
+                        (plural (if single-p "" "s"))
+                        (title-attr (format "%d post%s with this tag" count plural))
+                        (slug (org-ssg--tag-to-slug tag))
+                        (tag-inactive (if single-p "tag-inactive" ""))
+                        (color-class (concat "tag-" slug)))
+                   (format "<a class=\"ssg-tag %s %s\" href=\"/tags/%s.html\" title=\"%s\">%s</a>"
+                           color-class tag-inactive slug title-attr tag)))
+               tags " ")
+              "</div>")
+    ""))
 
 (defun org-ssg--render-tag-item (tag count theme-dir)
   "Return HTML for TAG with post COUNT using tag-item partial from THEME-DIR."
@@ -791,56 +925,9 @@ Used to access global tag counts during post rendering.")
     (error (org-ssg--log :error (format "Failed to generate tags: %s"
                                         (error-message-string err))))))
 
-(defun org-ssg--tags-html (tags)
-  "Return an HTML string representing TAGS as a linked ssg-tags div.
-Uses `org-ssg--global-tags-table` to inject post counts into the title attribute."
-  (if tags
-      (concat "<div class=\"ssg-tags\">"
-              (mapconcat
-               (lambda (tag)
-                 (let* ((count (if org-ssg--global-tags-table
-                                   (length (gethash tag org-ssg--global-tags-table))
-                                 0))
-                        (single-p (= count 1))
-                        (plural (if single-p "" "s"))
-                        (title-attr (format "%d post%s with this tag" count plural))
-                        (slug (org-ssg--tag-to-slug tag))
-                        (tag-inactive (if single-p "tag-inactive" ""))
-                        (color-class (concat "tag-" slug)))
-                   (format "<a class=\"ssg-tag %s %s\" href=\"/tags/%s.html\" title=\"%s\">%s</a>"
-                           color-class tag-inactive slug title-attr tag)))
-               tags " ")
-              "</div>")
-    ""))
-
-(defun org-ssg--tags-html (tags)
-  "Return an HTML string representing TAGS as a linked ssg-tags div."
-  (if tags
-      (concat "<div class=\"ssg-tags\">"
-              (mapconcat
-               (lambda (tag)
-                 (format "<a class=\"ssg-tag\" href=\"/tags/%s.html\">%s</a>"
-                         (org-ssg--tag-to-slug tag) tag))
-               tags " ")
-              "</div>")
-    ""))
-
-(defun org-ssg--get-all-tags (source-dir)
-  "Return a list of all existing tags across all posts in SOURCE-DIR."
-  (let ((tags (make-hash-table :test 'equal)))
-    (when (file-exists-p source-dir)
-      (dolist (file (directory-files-recursively source-dir "\\.org$"))
-        (unless (org-ssg--ignored-file-p (file-name-nondirectory file))
-          (with-temp-buffer
-            (insert-file-contents file)
-            (goto-char (point-min))
-            ;; use regex instead org AST, as it is faster when iterating through all files
-            (while (re-search-forward "^#\\+\\(?:FILE\\)?TAGS:[ \t]*\\(.*\\)" nil t)
-              (dolist (t-str (org-ssg--parse-tags (match-string 1)))
-                (puthash t-str t tags)))))))
-    (hash-table-keys tags)))
-
-;;; Feeds:
+;;; ============================================================================
+;;; Feeds & Sitemap
+;;; ============================================================================
 
 (defun org-ssg--parse-date (date-string)
   "Return an internal time value parsed from DATE-STRING (yyyy-mm-dd format)."
@@ -992,67 +1079,12 @@ SITE-TITLE supplies the feed title."
     (error (org-ssg--log :error (format "Failed to generate sitemap: %s"
                                         (error-message-string err))))))
 
-;;; Public API:
 
-(defun org-ssg--resolve-config (args)
-  "Return a resolved configuration plist derived from ARGS.
-Expand :base-dir and derive :source, :output, and :static when absent.
-Resolve :theme relative to the themes/ subdirectory of :base-dir."
-  (let ((base  (plist-get args :base-dir))
-        (theme (plist-get args :theme))
-        (final args))
-    (when base
-      (setq base (expand-file-name base))
-      (when theme
-        (setq final (plist-put final :theme
-                               (expand-file-name theme
-                                                 (expand-file-name "themes" base)))))
-      
-      (dolist (key '(:source :output))
-        (unless (plist-member final key)
-          (setq final
-                (plist-put final key
-                           (pcase key
-                             (:source (expand-file-name "content" base))
-                             (:output (expand-file-name "public_html" base)))))))
-      
-      (let ((has-static (plist-member final :static))
-            (static-val (plist-get final :static)))
-        (setq final
-              (plist-put final :static
-                         (if (not has-static)
-                             ;; Fallback: no :static cfg
-                             (list (expand-file-name "static" base))
-                           (cond
-                            ;; Single string (one directory)
-                            ((stringp static-val)
-                             (list (expand-file-name static-val base)))
-                            ;; list of strings (0-n directories)
-                            ((listp static-val)
-                             (mapcar (lambda (dir) (expand-file-name dir base)) static-val))
-                            ;; Fallback: nil
-                            (t nil)))))))
-    final))
 
-(defun org-ssg--validate-config (config)
-  "Validate the required fields in CONFIG, signaling a user error if invalid."
-  (let ((source     (plist-get config :source))
-        (output     (plist-get config :output))
-        (base-url   (plist-get config :base-url))
-        (site-title (plist-get config :site-title))
-        (per-page   (or (plist-get config :per-page) 10)))
-    (unless (and source (file-directory-p source))
-      (user-error "Invalid or missing :source directory"))
-    (unless output
-      (user-error "Missing :output directory"))
-    (unless (and base-url (string-match-p "\\`https?://" base-url))
-      (user-error "Missing or invalid :base-url (must start with http/https)"))
-    (unless (and site-title (not (string-empty-p site-title)))
-      (user-error "Missing or empty :site-title"))
-    (unless (and (integerp per-page) (> per-page 0))
-      (user-error ":per-page must be a positive integer"))))
+;;; ============================================================================
+;;; Build & deploy
+;;; ============================================================================
 
-;; Build
 ;;;###autoload
 (defun org-ssg-build ()
   "Build the site for the project in the current directory."
@@ -1088,7 +1120,6 @@ Resolve :theme relative to the themes/ subdirectory of :base-dir."
          (org-ssg--log :error (error-message-string err))
          (org-ssg--log-summary))))))
 
-;; Deploy
 ;;;###autoload
 (defun org-ssg-clean ()
   "Delete the output directory to remove orphaned files and dev artifacts."
@@ -1110,6 +1141,10 @@ directory, and builds the site from scratch."
   (org-ssg-build)
   
   (message "org-ssg: Production build finished! Ready for deployment."))
+
+;;; ============================================================================
+;;; Creation Helper
+;;; ============================================================================
 
 ;;;###autoload
 (defun org-ssg-new ()
@@ -1155,10 +1190,9 @@ directory, and builds the site from scratch."
       (insert (org-ssg--create-frontmatter title date tags)))
     (message "org-ssg: Frontmatter inserted.")))
 
-
-;; Serve page:
-(defvar org-ssg--build-version 0
-  "Timestamp of the last successfull build (used for live reload).")
+;;; ============================================================================
+;;; Development server
+;;; ============================================================================
 
 ;;;###autoload
 (defun org-ssg-serve ()
@@ -1196,15 +1230,6 @@ Does NOT stop the server if it is running in another directory, unless FORCE is 
               (message "org-ssg: Stopped server & watcher"))
           (message "org-ssg: Server is running on another project. Please stop it there, or use force!")))
     (message "org-ssg: Server did not run.")))
-
-;;; File watcher
-(defvar org-ssg--watch-descriptors nil
-  "List of active file system watchers.")
-
-(defvar org-ssg--watch-timer nil
-  "Timer for debouncing of the build events.
-Debouncing is required as the OS sometimes fires 2-3 events per change."
-  )
 
 (defun org-ssg--watch-callback (event)
   "Callback for file change.
