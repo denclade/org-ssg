@@ -306,6 +306,13 @@ Asset paths are resolved relative to SOURCE-FILE and mirrored in OUTPUT-FILE."
                      (file-name-as-directory (file-truename path2)))))
 
 
+(defun org-ssg--ensure-absolute-url (url base-dir)
+  "Return URL as an absolute path prefixed with BASE-DIR if it is relative."
+  (if (or (string-prefix-p "/" url)
+          (string-match-p "\\`https?://" url))
+      url
+    (concat base-dir url)))
+
 ;;; ============================================================================
 ;;; Org Parsing
 ;;; ============================================================================
@@ -668,12 +675,16 @@ Variable output comes from e.g. `org-ssg--collect-file'
          (tags      (plist-get post :tags))
          (url       (org-ssg--post-site-url post))
 
+         (post-dir  (file-name-directory url))
+         
          (css-html  (mapconcat (lambda (href)
                                  (format "<link rel=\"stylesheet\" href=\"%s\">\n  "
-                                         (org-ssg--resolve-css-path href)))
+                                         (org-ssg--ensure-absolute-url (org-ssg--resolve-css-path href) post-dir)))
                                (plist-get post :css) ""))
+         
          (js-html   (mapconcat (lambda (src)
-                                 (format "<script src=\"%s\" defer></script>\n  " src))
+                                 (format "<script src=\"%s\" defer></script>\n  "
+                                         (org-ssg--ensure-absolute-url src post-dir)))
                                (plist-get post :js) ""))
          (inner     (car (org-ssg--render-template template
                                                    (list :title        title
