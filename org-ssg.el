@@ -430,11 +430,25 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
            (slug     (org-ssg--file-to-slug filepath))
            (css       (org-ssg--extract-keyword-list ast "CSS"))
            (js        (org-ssg--extract-keyword-list ast "JS"))
+
+           (file-dir  (file-name-directory filepath))
+           (local-res (delq nil
+                            (mapcar (lambda (path)
+                                      ;; if it is an relative file path copy to static
+                                      (when (and (not (string-prefix-p "/" path))
+                                                 (not (string-match-p "\\`https?://" path)))
+                                        (let ((abs (expand-file-name path file-dir)))
+                                          (if (file-exists-p abs)
+                                              abs
+                                            (org-ssg--log :warn (format "Lokale Datei fehlt: %s in %s" path filepath))
+                                            nil))))
+                                    (append css js))))
+           (assets    (append (org-ssg--collect-assets ast filepath) local-res))
+           
            (relative (file-relative-name filepath source-dir))
            (output   (expand-file-name
                       (concat (file-name-sans-extension relative) ".html")
-                      output-dir))
-           (assets   (org-ssg--collect-assets ast filepath)))
+                      output-dir)))
       (list :title        title
             :date         date
             :type         type
@@ -497,6 +511,8 @@ directly in SOURCE-DIR with no type subdirectory are skipped."
 (defun org-ssg--org-to-html (filepath)
   "Return the HTML body string produced by exporting the Org file at FILEPATH."
   (with-temp-buffer
+    ;; enable relative includes e.g. html-file includes in .orgs
+    (setq default-directory (file-name-directory filepath))
     (insert-file-contents filepath)
     (setq-local tab-width 8)
     (org-mode)
@@ -569,7 +585,10 @@ Asset paths are resolved relative to SOURCE-FILE and mirrored in OUTPUT-FILE."
       (let* ((relative (file-relative-name asset source-dir))
              (dest     (expand-file-name relative output-dir)))
         (make-directory (file-name-directory dest) t)
-        (copy-file asset dest t)))))
+        (if (string-match-p "\\.scss\\'" asset)
+            (let ((css-dest (concat (file-name-sans-extension dest) ".css")))
+              (org-ssg--compile-scss asset css-dest))
+          (copy-file asset dest t))))))
 
 (defun org-ssg--write-post (post)
   "Render POST and write it to its output path."
