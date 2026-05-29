@@ -825,6 +825,20 @@ Uses `org-ssg--global-tags-table` to inject post counts into the title attribute
               "</div>")
     ""))
 
+(defun org-ssg--get-all-tags (source-dir)
+  "Return a list of all existing tags across all posts in SOURCE-DIR."
+  (let ((tags (make-hash-table :test 'equal)))
+    (when (file-exists-p source-dir)
+      (dolist (file (directory-files-recursively source-dir "\\.org$"))
+        (unless (org-ssg--ignored-file-p (file-name-nondirectory file))
+          (with-temp-buffer
+            (insert-file-contents file)
+            (goto-char (point-min))
+            (while (re-search-forward "^#\\+\\(?:FILE\\)?TAGS:[ \t]*\\(.*\\)" nil t)
+              (dolist (t-str (org-ssg--parse-tags (match-string 1)))
+                (puthash t-str t tags)))))))
+    (hash-table-keys tags)))
+
 ;;; Feeds:
 
 (defun org-ssg--parse-date (date-string)
@@ -1107,7 +1121,7 @@ directory, and builds the site from scratch."
          (types  (mapcar #'file-name-nondirectory dirs))
          (type   (completing-read "Type: " types nil t))
          (title  (read-string "Title: "))
-         (tags   (read-string "Tags (comma separated): "))
+         (tags-list (completing-read-multiple "Tags (comma separated): " existing-tags))
          (date   (format-time-string "%F"))
          (slug   (replace-regexp-in-string "[^a-z0-9]" "-" (downcase title)))
          (dir    (expand-file-name type source))
@@ -1119,7 +1133,26 @@ directory, and builds the site from scratch."
      nil file)
     (find-file file)))
 
+(defun org-ssg--create-frontmatter (title date tags)
+  "Return the formatted frontmatter string, insert TITLE, DATE and TAGS."
+  (format "#+TITLE: %s\n#+DATE: %s\n#+TAGS: %s\n#+DRAFT: t\n\n"
+          title date tags))
 
+;;;###autoload
+(defun org-ssg-insert-frontmatter ()
+  "Interactively prompt for metadata and insert frontmatter at the top of the current file."
+  (interactive)
+  (let* ((org-ssg--config (org-ssg--load-config))
+         (source (org-ssg--config-get :source))
+         (existing-tags (org-ssg--get-all-tags source))
+         (title  (read-string "Title: "))
+         (tags-list (completing-read-multiple "Tags (comma separated): " existing-tags))
+         (tags   (string-join tags-list ", "))
+         (date   (format-time-string "%F")))
+    (save-excursion
+      (goto-char (point-min))
+      (insert (org-ssg--create-frontmatter title date tags)))
+    (message "org-ssg: Frontmatter inserted.")))
 
 
 ;; Serve page:
