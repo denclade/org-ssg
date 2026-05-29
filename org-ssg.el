@@ -351,7 +351,7 @@ WPM is the words-per-minute rate; it defaults to 200."
          (clean   (replace-regexp-in-string "^#\\+[A-Z_]+:.*$" "" text))
          (words   (length (split-string clean "\\W+" t)))
          (minutes (max 0 (round (/ (float words) (or wpm 200))))))
-    (format "%d min read" minutes)))
+    (format "Lesezeit: %d Min." minutes)))
 
 (defun org-ssg--file-to-slug (filepath)
   "Return a URL slug derived from FILEPATH."
@@ -546,7 +546,7 @@ Variable output comes from e.g. `org-ssg--collect-file'
          (inner     (car (org-ssg--render-template template
                                                    (list :title        title
                                                          :content      content
-                                                         :date         date
+                                                         :date         (format-time-string "%d. %B %Y" (org-ssg--parse-date date))
                                                          :tags         (org-ssg--tags-html tags)
                                                          :reading-time (or (plist-get post :reading-time) "")
                                                          :slug         (plist-get post :slug))
