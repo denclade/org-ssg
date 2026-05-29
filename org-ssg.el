@@ -313,6 +313,23 @@ Asset paths are resolved relative to SOURCE-FILE and mirrored in OUTPUT-FILE."
       url
     (concat base-dir url)))
 
+(defun org-ssg--parse-asset-str (str)
+  "Split STR into a cons cell (source . attributes).
+e.g. for #+JS: js/app.js defer"
+  (let ((parts (split-string str "[ \t]+" t)))
+    (cons (car parts) (string-join (cdr parts) " "))))
+
+(defun org-ssg--build-asset-html (items post-dir template &optional path-resolver)
+  "Generate HTML tags for a list of ITEMS (src . attrs) using TEMPLATE.
+PATH-RESOLVER is an optional function applied to the source path (e.g., for SCSS)."
+  (mapconcat (lambda (item)
+               (let* ((src (if path-resolver (funcall path-resolver (car item)) (car item)))
+                      (attrs (cdr item))
+                      (final-src (org-ssg--ensure-absolute-url src post-dir))
+                      (attr-str (if (string-empty-p attrs) "" (concat " " attrs))))
+                 (format template final-src attr-str)))
+             items ""))
+
 ;;; ============================================================================
 ;;; Org Parsing
 ;;; ============================================================================
@@ -443,11 +460,14 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
                       (or (org-ssg--extract-keyword ast "TAGS")
                           (org-ssg--extract-keyword ast "FILETAGS"))))
            (slug     (org-ssg--file-to-slug filepath))
-           (css       (org-ssg--extract-keyword-list ast "CSS"))
-           (js        (org-ssg--extract-keyword-list ast "JS"))
+           (css         (mapcar #'org-ssg--parse-asset-str (org-ssg--extract-keyword-list ast "CSS")))
+           (js          (mapcar #'org-ssg--parse-asset-str (org-ssg--extract-keyword-list ast "JS")))
            (extra-assets (org-ssg--extract-keyword-list ast "ASSETS"))
            (file-dir  (file-name-directory filepath))
-           (local-res   (org-ssg--resolve-local-assets filepath (append css js extra-assets)))
+           (local-res   (org-ssg--resolve-local-assets filepath
+                                                       (append (mapcar #'car css)
+                                                               (mapcar #'car js)
+                                                               extra-assets)))
            (assets    (append (org-ssg--collect-assets ast filepath) local-res))
            
            (relative (file-relative-name filepath source-dir))
@@ -677,15 +697,12 @@ Variable output comes from e.g. `org-ssg--collect-file'
 
          (post-dir  (file-name-directory url))
          
-         (css-html  (mapconcat (lambda (href)
-                                 (format "<link rel=\"stylesheet\" href=\"%s\">\n  "
-                                         (org-ssg--ensure-absolute-url (org-ssg--resolve-css-path href) post-dir)))
-                               (plist-get post :css) ""))
-         
-         (js-html   (mapconcat (lambda (src)
-                                 (format "<script src=\"%s\" defer></script>\n  "
-                                         (org-ssg--ensure-absolute-url src post-dir)))
-                               (plist-get post :js) ""))
+         (css-html  (org-ssg--build-asset-html (plist-get post :css) post-dir 
+                                                  "<link rel=\"stylesheet\" href=\"%s\"%s>\n  " 
+                                                  #'org-ssg--resolve-css-path))
+                                                  
+         (js-html   (org-ssg--build-asset-html (plist-get post :js) post-dir 
+                                                  "<script src=\"%s\"%s></script>\n  "))
          (inner     (car (org-ssg--render-template template
                                                    (list :title        title
                                                          :content      content
