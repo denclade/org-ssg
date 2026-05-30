@@ -406,17 +406,26 @@ The type is the name of the immediate subdirectory of SOURCE-DIR."
 (defun org-ssg--resolve-local-assets (filepath assets-list)
   "Return absolute paths for all relative files under FILEPATH in ASSETS-LIST.
 ASSETS-LIST contains lists of e.g. CSS, JS or EXTRA assets."
-  (let ((file-dir (file-name-directory filepath)))
-    (delq nil
-          (mapcar (lambda (path)
-                    (when (and (not (string-prefix-p "/" path))
-                               (not (string-match-p "\\`https?://" path)))
-                      (let ((abs (expand-file-name path file-dir)))
-                        (if (file-exists-p abs)
-                            abs
-                          (org-ssg--log :warn (format "Lokale Datei fehlt: %s in %s" path filepath))
-                          nil))))
-                  assets-list))))
+(let ((file-dir (file-name-directory filepath))
+        (resolved nil))
+    (dolist (path assets-list)
+      (when (and (not (string-prefix-p "/" path))
+                 (not (string-match-p "\\`https?://" path)))
+        (let ((abs (expand-file-name path file-dir)))
+          (cond
+           ;; 1. case directory
+           ((file-directory-p abs)
+            (dolist (file (directory-files-recursively abs ".*"))
+              ;; ignore temp files
+              (unless (org-ssg--ignored-file-p (file-name-nondirectory file))
+                (push file resolved))))
+           ;; 2. case single file
+           ((file-exists-p abs)
+            (push abs resolved))
+           ;; 3. nothing
+           (t
+            (org-ssg--log :warn (format "Local asset missing: %s in %s" path filepath)))))))
+    (nreverse resolved)))
 
 (defun org-ssg--collect-assets (ast source-file)
   "Return a list of absolute paths for all file: links found in AST.
