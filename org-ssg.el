@@ -117,6 +117,13 @@ Each entry is a cons cell (LEVEL . MESSAGE) where LEVEL is one of
 Debouncing is required as the OS sometimes fires 2-3 events per change."
   )
 
+;; Performance improvements
+(defvar org-ssg--post-cache (make-hash-table :test 'equal)
+  "In-memory cache mapping file paths to a cons cell of (mtime . post-plist).")
+
+(defvar org-ssg--force-rebuild nil
+  "Flag used by the watcher to force a full rebuild if global files (theme/config) change.")
+
 ;;; ============================================================================
 ;;; Configuration:
 ;;; ============================================================================
@@ -470,6 +477,17 @@ Paths are resolved relative to SOURCE-FILE and filtered to those that exist."
                     nil))))))))
 
 (defun org-ssg--collect-file (filepath source-dir output-dir)
+  "Return a post plist, utilizing an in-memory cache if the file hasn't changed."
+  (let* ((attrs  (file-attributes filepath))
+         (mtime  (file-attribute-modification-time attrs))
+         (cached (gethash filepath org-ssg--post-cache)))
+    (if (and cached (equal (car cached) mtime))
+        (cdr cached)
+      (let ((post (org-ssg--collect-file-parse filepath source-dir output-dir)))
+        (puthash filepath (cons mtime post) org-ssg--post-cache)
+        post))))
+
+(defun org-ssg--collect-file-parse (filepath source-dir output-dir)
   "Return a post plist by parsing the Org file at FILEPATH.
 SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
   (with-temp-buffer
@@ -484,8 +502,8 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
            (type      (or (when file-type (downcase file-type)) inferred "page"))
 
            (description (org-ssg--extract-keyword ast "DESCRIPTION"))
-           (excerpt     (or (org-ssg--get-excerpt-org ast)
-                            description))
+           (excerpt-raw (or (org-ssg--get-excerpt-org ast) description))
+           (excerpt     (org-ssg--org-string-to-html excerpt-raw))
 
            (draft    (org-ssg--normalize-boolean
                       (org-ssg--extract-keyword ast "DRAFT")))
@@ -659,7 +677,7 @@ All global configuration variables are also available in the template."
          (date       (or (plist-get post :date) ""))
          (tags       (plist-get post :tags))
          (url        (org-ssg--post-site-url post))
-         (excerpt    (org-ssg--org-string-to-html (plist-get post :excerpt)))
+         (excerpt    (or (plist-get post :excerpt) ""))
          (base-vars  (list :title title :url url :date date
                            :tags (if tags (string-join tags ", ") "")
                            :excerpt excerpt)))
@@ -857,25 +875,40 @@ Variable output comes from e.g. `org-ssg--collect-file'
                       (list :extra-css css-html
                             :extra-js  js-html))))
 
-(defun org-ssg--write-post (post)
-  "Render POST and write it to its output path."
-  (let* ((output (plist-get post :output))
-         (html   (org-ssg--render-post post))
-         (assets (plist-get post :assets)))
-    (make-directory (file-name-directory output) t)
-    (write-region html nil output)
-    (when assets
-      (org-ssg--copy-assets assets (plist-get post :source) output))
-    (org-ssg--log :info (format "Rendered: %s" output))))
+(defun org-ssg--write-post (post &optional force)
+  "Render POST and write it to its output path ONLY if it's newer or FORCE is t."
+  (let* ((source (plist-get post :source))
+         (output (plist-get post :output))
+         (source-time (file-attribute-modification-time (file-attributes source)))
+         (output-time (if (file-exists-p output)
+                          (file-attribute-modification-time (file-attributes output))
+                        (encode-time 0 0 0 1 1 1970)))) ; Fallback n/a file
+    
+    (if (or force (time-less-p output-time source-time))
+        (let* ((html   (org-ssg--render-post post))
+               (assets (plist-get post :assets)))
+          (make-directory (file-name-directory output) t)
+          (write-region html nil output)
+          (when assets
+            (org-ssg--copy-assets assets source output))
+          (org-ssg--log :info (format "Rendered: %s" output))
+          t)
+      nil)))
 
-(defun org-ssg--render-all (posts)
-  "Render all POSTS to their output paths."
-  (dolist (post posts)
-    (condition-case err
-        (org-ssg--write-post post)
-      (error (org-ssg--log :warn (format "Failed to render %s: %s"
-                                         (plist-get post :source)
-                                         (error-message-string err)))))))
+(defun org-ssg--render-all (posts &optional force)
+  "Render all POSTS to their output paths. Returns the number of updated posts."
+  (let ((count 0))
+    (dolist (post posts)
+      (condition-case err
+          (when (org-ssg--write-post post force)
+            (cl-incf count))
+        (error (org-ssg--log :warn (format "Failed to render %s: %s"
+                                           (plist-get post :source)
+                                           (error-message-string err))))))
+    (if (> count 0)
+        (org-ssg--log :info (format "Rendered %d updated post(s)." count))
+      (org-ssg--log :info "No posts needed updating. Skipping HTML generation."))
+    count))
 
 ;;; ============================================================================
 ;;; Index and Pagination
@@ -1273,7 +1306,7 @@ SITE-TITLE supplies the feed title."
 ;;; ============================================================================
 
 ;;;###autoload
-(defun org-ssg-build ()
+(defun org-ssg-build (&optional force)
   "Build the site for the project in the current directory."
   (interactive)
   (let ((org-ssg--config (org-ssg--load-config)))
@@ -1293,14 +1326,15 @@ SITE-TITLE supplies the feed title."
             
             (dolist (static-dir statics)
               (org-ssg--copy-static static-dir (expand-file-name "static" output)))
+
+            (let ((rendered-count (org-ssg--render-all posts force)))
+              (when (or force (> rendered-count 0))
+                (org-ssg--generate-index posts output)
+                (org-ssg--generate-type-indices posts output)
+                (org-ssg--generate-tags posts output)
+                (org-ssg--generate-feeds posts output)
+                (org-ssg--generate-sitemap posts output)))
             
-            (org-ssg--copy-theme-static output theme-dir)
-            (org-ssg--render-all posts)
-            (org-ssg--generate-index posts output)
-            (org-ssg--generate-type-indices posts output)
-            (org-ssg--generate-tags posts output)
-            (org-ssg--generate-feeds posts output)
-            (org-ssg--generate-sitemap posts output)
             (setq org-ssg--build-version (float-time))
             (org-ssg--log :info "Build complete.")
             (org-ssg--log-summary))
@@ -1312,6 +1346,7 @@ SITE-TITLE supplies the feed title."
 (defun org-ssg-clean ()
   "Delete the output directory to remove orphaned files and dev artifacts."
   (interactive)
+  (clrhash org-ssg--post-cache)
   (let* ((org-ssg--config (org-ssg--load-config))
          (output (org-ssg--config-get :output)))
     (when (and output (file-exists-p output))
@@ -1422,21 +1457,22 @@ Does NOT stop the server if it is running in another directory, unless FORCE is 
 (defun org-ssg--watch-callback (event)
   "Callback for file change.
 EVENT is the list coming from `filenotify'."
-  (let* ((file (nth 2 event))
+(let* ((file (nth 2 event))
          (filename (file-name-nondirectory file)))
-    ;; ignored
     (unless (org-ssg--ignored-file-p filename)
+      (when (or (string-match-p "\\.html\\|\\.css\\|\\.js\\|\\.scss\\|\\.njk" filename)
+                (string= filename org-ssg-config-file))
+        (setq org-ssg--force-rebuild t))
       
-      ;; cancle additional timer
       (when org-ssg--watch-timer
         (cancel-timer org-ssg--watch-timer))
       
-      ;; Create new one
       (setq org-ssg--watch-timer
-            (run-with-timer 0.5 nil
+            (run-with-timer 0.2 nil
                             (lambda ()
                               (message "[Watcher] Change in %s detected. Rebuild..." filename)
-                              (org-ssg-build)))))))
+                              (org-ssg-build org-ssg--force-rebuild)
+                              (setq org-ssg--force-rebuild nil)))))))
 
 (defun org-ssg--watch-add-dir-tree (dir)
   "Add DIR and all subfolders recursively to watchers."
