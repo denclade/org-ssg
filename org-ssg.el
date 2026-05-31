@@ -477,14 +477,29 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
     (let* ((ast      (org-element-parse-buffer))
            (title    (org-ssg--extract-keyword ast "TITLE"))
            (date     (org-ssg--extract-keyword ast "DATE"))
+           ;; TODO: Simplify the type handling, got out of hand. Thin about
+           ;; what is important in types?
+           ;; Actually it should be like this:
+           ;; Either a user enters a type, if so this is the one to be used.
+           ;; If no type is entered the type is inferred by the parent dir.
+           ;; Parent dir -> Actually the first one after root /
+           ;; If there is no parent dir, use a default type
+           ;; aliases are just used for plural usage, this is required for
+           ;; the list template files. Could be looked up in the template
+           ;; rendering.
            (file-type (org-ssg--extract-keyword ast "TYPE"))
            (inferred  (org-ssg--infer-type filepath source-dir))
            (aliases   (org-ssg--config-get :type-aliases))
            (raw-type    (or (when file-type (downcase file-type)) inferred))
            (type        (or (cdr (assoc raw-type aliases)) raw-type))
+           ;; end type stuff.
+
+           ;; TODO: description vs. excerpt, should we really keep both?
            (description (org-ssg--extract-keyword ast "DESCRIPTION"))
            (excerpt     (or (org-ssg--get-excerpt-org ast)
                             description))
+
+           ;; TODO: Listed vs draft. Do we really require both?
            (draft    (org-ssg--normalize-boolean
                       (org-ssg--extract-keyword ast "DRAFT")))
            (listed   (org-ssg--normalize-boolean
@@ -520,7 +535,7 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
       (if hook (funcall hook base-post) base-post))))
 
 (defun org-ssg--collect (source-dir output-dir)
-  "Return a list of post plists by scanning SOURCE-DIR recursively.
+  "Return a list of post plists by scanning SOURCE-DIR for .org files recursively.
 OUTPUT-DIR is used to compute output paths.  Draft posts and files placed
 directly in SOURCE-DIR with no type subdirectory are skipped."
   (delq nil
