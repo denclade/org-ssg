@@ -1,7 +1,7 @@
 #+OPTIONS: toc:nil
 * org-ssg — An Emacs-native Static Site Generator
 [[https://github.com/dencla/org-ssg/actions/workflows/melpazoid.yml][https://github.com/dencla/org-ssg/actions/workflows/melpazoid.yml/badge.svg]]
-file:https://stable.melpa.org/packages/org-grimoire-badge.svg]]
+[[https://stable.melpa.org/#/org-grimoire][file:https://stable.melpa.org/packages/org-grimoire-badge.svg]]
 [[https://melpa.org/#/org-grimoire][file:https://melpa.org/packages/org-grimoire-badge.svg]]
 
 An Emacs static site generator built for speed and a seamless developer experience. 
@@ -9,6 +9,7 @@ Write your content in org-mode, configure everything in a simple local file, and
 
 *Features:*
 - **Zero-config defaults:** Auto-detects paths based on project root.
+- **Native Template Engine:** Built-in support for ={{#each}}= loops, ={{#if}}= conditions, and custom Lisp filters. 100% Emacs-native, zero external dependencies.
 - **Live-Reload & Watcher:** Save a file in Emacs, see it instantly in the browser.
 - **Native SCSS Support:** Automatically compiles =.scss= files when sass exists on your system.
 - **Rich Excerpts:** Native support for =#+begin_excerpt= blocks.
@@ -34,20 +35,25 @@ org-ssg uses a project-local configuration file. Create a file named =.ssg.el= i
  :base-url     "https://example.com"
  :description  "A site built with Emacs"
  :theme        "default"
- :type-aliases (("posts" . "post"))
- :source       ("content" "pages")
- :static       ("static")
- :per-page     10)
+ :per-page     10
+ :type-aliases (("posts" . "post")
+                ("videos" . "video"))
+ :filters      (("truncate" . (lambda (val)
+                                (if (> (length val) 50)
+                                    (concat (substring val 0 47) "...")
+                                  val)))
+                ("shout"    . upcase)))
 #+end_src
 
 org-ssg automatically derives all essential paths from the directory where =.ssg.el= is located. 
 
-| Key       | Default Derived Path         | Description                                     |
-|-----------+------------------------------+-------------------------------------------------|
-| =:source= | =base-dir/content/=          | Where your .org files live (accepts a list)     |
-| =:output= | =base-dir/public_html/=      | Generated HTML output                           |
-| =:static= | =base-dir/static/=           | Static assets like CSS/JS (accepts a list)      |
-| =:theme=  | =base-dir/themes/default/=   | Path to your HTML templates                     |
+| Key          | Default Derived Path         | Description                                     |
+|--------------+------------------------------+-------------------------------------------------|
+| =:source=    | =base-dir/content/=          | Where your .org files live (accepts a list)     |
+| =:output=    | =base-dir/public_html/=      | Generated HTML output                           |
+| =:static=    | =base-dir/static/=           | Static assets like CSS/JS (accepts a list)      |
+| =:theme=     | =base-dir/themes/default/=   | Path to your HTML templates                     |
+| =:filters=   | =nil=                        | Alist of custom Lisp functions for templates    |
 
 ** Development Workflow (Live-Reload)
 
@@ -62,14 +68,14 @@ To stop the watcher, run =M-x org-ssg-stop-watch=.
 
 ** Writing Content
 
-The content type is inferred from the directory the file lives in. For example, a file in =content/posts/= uses the =posts.html= template (unless overridden by =:type-aliases=).
+The content type is inferred from the directory the file lives in. For example, a file in =content/video/= is treated as type =video=. 
 
 #+begin_src org
 #+TITLE: My Post
 #+DATE: 2026-05-28
 #+TAGS: emacs lisp
 #+CSS: /static/css/gallery.css
-#+JS: /static/js/chart.js
+#+MY_CUSTOM_VAR: Hello World
 
 #+begin_excerpt
 This is a rich-text excerpt. It will be rendered on the index page!
@@ -91,6 +97,8 @@ Post content goes here. Full org-mode syntax supported.
 | =#+JS:=       | Inject specific JS into the document <head>  | =#+JS: /static/script.js=     |
 | =#+DRAFT:=    | Set to =t= to completely exclude from build  | =#+DRAFT: t=                  |
 | =#+LISTED:=   | Set to =nil= to hide from index listings     | =#+LISTED: nil=               |
+
+*Note on Custom Keywords:* Any unrecognized keyword (like =#+MY_VAR: value=) is automatically extracted and passed to the template engine. You can render it via ={{my-var}}=.
 
 *** Custom Links & Buttons
 org-ssg provides custom link types to easily add CSS classes to your inline links:
@@ -119,8 +127,67 @@ org-ssg will compile it and rewrite the HTML link to point to =style.css=.
 
 ** Templates
 
-*** Base template
-=base.html= is the site-wide layout. All pages are wrapped in it.
+org-ssg features a powerful, Emacs-native template engine. It supports includes, logic-less loops, conditionals, and Lisp-powered filters.
+
+*** 1. Template Resolution
+
+Templates are matched based on the content =type=:
+- **Single Page View:** A post of type =video= will look for =video.html= (or =page.html= as fallback).
+- **Type Index Pages:** If you defined =("videos" . "video")= in =:type-aliases=, org-ssg will automatically generate =/videos/index.html= using the =videos.html= template (falling back to =index.html=).
+
+*** 2. Variables & Filters
+
+Access standard or custom frontmatter variables using double brackets. You can pipe variables through filters using the =|= symbol.
+
+#+begin_src html
+<h1>{{title}}</h1>
+<time>{{date | date}}</time>
+<p>{{excerpt | truncate}}</p>
+<span>{{author | upcase}}</span>
+#+end_src
+
+Built-in filters are =date=, =upcase=, and =downcase=. Add your own in =.ssg.el=.
+
+*** 3. Conditionals (If/Else)
+
+You can conditionally render blocks based on variable existence or truthiness:
+
+#+begin_src html
+<article>
+  {{#if draft}}
+    <span class="warning">Draft</span>
+  {{else}}
+    <span class="success">Published</span>
+  {{/if}}
+
+  {{#if custom_video_url}}
+    <iframe src="{{custom_video_url}}"></iframe>
+  {{/if}}
+</article>
+#+end_src
+
+*** 4. Loops (Lists)
+
+Iterating over collections (like =posts= on the index page) is done with ={{#each}}=. You have full control over the HTML structure without needing extra files.
+
+#+begin_src html
+<div class="post-grid">
+  {{#each posts}}
+    <article class="card">
+      <h2><a href="{{url}}">{{title}}</a></h2>
+      <div class="meta">{{date | date}}</div>
+      <p>{{excerpt}}</p>
+      {{tags}}
+    </article>
+  {{/each}}
+</div>
+
+{{pagination}}
+#+end_src
+
+*** 5. Base template & Includes
+
+=base.html= is the site-wide layout. All single pages and index pages are wrapped in it. You can inject external files using ={{include file.html}}=.
 
 #+begin_src html
 <!DOCTYPE html>
@@ -128,43 +195,34 @@ org-ssg will compile it and rewrite the HTML link to point to =style.css=.
 <head>
   <meta charset="UTF-8">
   <title>{{title}}</title>
-  <link rel="stylesheet" href="/static/css/style.css">
   {{extra-css}}
-  {{extra-js}}
 </head>
 <body>
   {{include partials/navbar.html}}
-  {{content}}
+  
+  <main>
+    {{content}}
+  </main>
+  
   {{include partials/footer.html}}
+  {{extra-js}}
 </body>
 </html>
 #+end_src
 
-*(Note: ={{extra-css}}= and ={{extra-js}}= are automatically populated by the =#+CSS:= and =#+JS:= keywords).*
+*** Available Placeholders (Standard Variables)
 
-*** Post Item (Index Lists)
-For list views (like =index.html= or tags), use ={{excerpt}}= to render the summary:
-
-#+begin_src html
-<article class="post-item">
-  <h2><a href="{{url}}">{{title}}</a></h2>
-  <div class="excerpt">
-    {{excerpt}}
-  </div>
-</article>
-#+end_src
-
-*** Available Placeholders
+These are the built-in variables available in your templates. Any custom frontmatter keywords (e.g., =#+MY_VAR:=) are also available as placeholders (e.g., ={{my-var}}=).
 
 | Placeholder      | Description                                      |
 |------------------|--------------------------------------------------|
 | ={{title}}=      | Current page title                               |
 | ={{site-title}}= | Global site title from =.ssg.el=                 |
-| ={{content}}=    | Rendered page content                            |
+| ={{content}}=    | Rendered page content (HTML)                     |
 | ={{excerpt}}=    | Post excerpt (used in lists)                     |
 | ={{url}}=        | Root-relative URL of the current page            |
-| ={{date}}=       | Publication date                                 |
-| ={{tags}}=       | Rendered tag links                               |
+| ={{date}}=       | Publication date (raw format, use filter!)       |
+| ={{tags}}=       | Rendered HTML tag links                          |
 | ={{extra-css}}=  | CSS links injected from =#+CSS:=                 |
 | ={{extra-js}}=   | JS tags injected from =#+JS:=                    |
 
