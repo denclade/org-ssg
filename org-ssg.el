@@ -664,90 +664,96 @@ All global configuration variables are also available in the template."
                      unless (memq k '(:tags :date :excerpt :css :js :assets))
                      nconc (list k (if v (if (stringp v) v (format "%s" v)) ""))))))
 
-(defun org-ssg--process-loops (template vars theme-dir)
-  "Process {{#each list}} or {{#each list as item}}...{{/each}} blocks in TEMPLATE."
+(defun org-ssg--replace-in-template (template regex replace-fn)
+  "Search for REGEX in TEMPLATE and call REPLACE-FN to replace it.
+Returns a Cons-Cell (NEW-TEMPLATE . CHANGED-P)."
   (let ((changed nil))
     (with-temp-buffer
       (insert template)
       (goto-char (point-min))
-      (while (re-search-forward "{{\\#each[ \t]+\\([a-zA-Z0-9_-]+\\)\\(?:[ \t]+as[ \t]+\\([a-zA-Z0-9_-]+\\)\\)?}}[ \t]*\n?\\(\\(?:.\\|\n\\)*?\\){{/each}}" nil t)
+      (while (re-search-forward regex nil t)
         (setq changed t)
-        (let* ((list-key   (intern (concat ":" (match-string 1))))
-               (as-var     (match-string 2))
-               (inner-tmpl (match-string 3))
-               (items      (plist-get vars list-key)))
-          (let ((replacement
-                 (save-match-data
-                   (if (listp items)
-                       (mapconcat (lambda (item)
-                                    (let* ((base-item-vars (if (plist-get item :source)
-                                                               (org-ssg--post-to-vars item)
-                                                             item))
-                                           (item-vars (if as-var
-                                                          (let ((prefixed nil)
-                                                                (prefix (concat ":" as-var ".")))
-                                                            (cl-loop for (k v) on base-item-vars by #'cddr
-                                                                     do (setq prefixed (plist-put prefixed
-                                                                                                  (intern (concat prefix (substring (symbol-name k) 1)))
-                                                                                                  v)))
-                                                            prefixed)
-                                                        base-item-vars)))
-                                      (car (org-ssg--render-template inner-tmpl (append item-vars vars) theme-dir))))
-                                  items "")
-                     ""))))
-            (replace-match replacement t t))))
+        ;; TODO: save-match-data schützt den State, falls replace-fn intern wieder Regex nutzt
+        (let ((replacement (save-match-data (funcall replace-fn))))
+          (replace-match (or replacement "") t t)))
       (cons (buffer-string) changed))))
+
+(defun org-ssg--prefix-plist-keys (plist prefix-str)
+  "Stellt PREFIX-STR (z.B. 'item') vor alle Keys in PLIST."
+  (let ((prefixed nil)
+        (prefix (concat ":" prefix-str ".")))
+    (cl-loop for (k v) on plist by #'cddr
+             do (setq prefixed 
+                      (plist-put prefixed
+                                 (intern (concat prefix (substring (symbol-name k) 1)))
+                                 v)))
+    prefixed))
+
+(defun org-ssg--process-loops (template vars theme-dir)
+  "Process {{#each list}} or {{#each list as item}}...{{/each}} blocks in TEMPLATE."
+  (org-ssg--replace-in-template
+   template
+   "{{\\#each[ \t]+\\([a-zA-Z0-9_-]+\\)\\(?:[ \t]+as[ \t]+\\([a-zA-Z0-9_-]+\\)\\)?}}[ \t]*\n?\\(\\(?:.\\|\n\\)*?\\){{/each}}"
+   (lambda ()
+     (let* ((list-key   (intern (concat ":" (match-string 1))))
+            (as-var     (match-string 2))
+            (inner-tmpl (match-string 3))
+            (items      (plist-get vars list-key)))
+       
+       (if (listp items)
+           (mapconcat
+            (lambda (item)
+              (let* (
+                     (base-vars (if (plist-get item :source)
+                                    (org-ssg--post-to-vars item)
+                                  item))
+                     (item-vars (if as-var
+                                    (org-ssg--prefix-plist-keys base-vars as-var)
+                                  base-vars))
+                     (combined-vars (append item-vars vars)))
+
+                (car (org-ssg--render-template inner-tmpl combined-vars theme-dir))))
+            items "")
+         "")))))
 
 (defun org-ssg--process-ifs (template vars theme-dir)
   "Process {{#if var}}...{{else}}...{{/if}} blocks in TEMPLATE."
-  (let ((changed nil))
-    (with-temp-buffer
-      (insert template)
-      (goto-char (point-min))
-      (while (re-search-forward "{{\\#if[ \t]+\\([^}]+\\)}}\n?\\(\\(?:.\\|\n\\)*?\\){{/if}}" nil t)
-        (setq changed t)
-        (let* ((var-sym    (intern (concat ":" (match-string 1))))
-               (full-block (match-string 2))
-               (val        (plist-get vars var-sym))
-               (truthy     (and val
-                                (not (equal val ""))
-                                (not (equal (downcase (format "%s" val)) "false")))))
-          (let ((replacement
-                 (save-match-data
-                   (let ((if-block full-block)
-                         (else-block ""))
-                     (when (string-match "\\(\\(?:.\\|\n\\)*?\\){{else}}\n?\\(\\(?:.\\|\n\\)*\\)" full-block)
-                       (setq if-block   (match-string 1 full-block))
-                       (setq else-block (match-string 2 full-block)))
-                     (car (org-ssg--render-template (if truthy if-block else-block) vars theme-dir))))))
-            (replace-match replacement t t))))
-      (cons (buffer-string) changed))))
+  (org-ssg--replace-in-template
+   template
+   "{{\\#if[ \t]+\\([^}]+\\)}}\n?\\(\\(?:.\\|\n\\)*?\\){{/if}}"
+   (lambda ()
+     (let* ((var-sym    (intern (concat ":" (match-string 1))))
+            (full-block (match-string 2))
+            (val        (plist-get vars var-sym))
+            (truthy     (and val
+                             (not (equal val ""))
+                             (not (equal (downcase (format "%s" val)) "false")))))
+       (let ((if-block full-block)
+             (else-block ""))
+         (when (string-match "\\(\\(?:.\\|\n\\)*?\\){{else}}\n?\\(\\(?:.\\|\n\\)*\\)" full-block)
+           (setq if-block   (match-string 1 full-block))
+           (setq else-block (match-string 2 full-block)))
+         (car (org-ssg--render-template (if truthy if-block else-block) vars theme-dir)))))))
 
 (defun org-ssg--process-vars (template vars)
   "Replace {{var}} or {{var | filter}} from VARS in TEMPLATE."
-  (let ((changed nil))
-    (with-temp-buffer
-      (insert template)
-      (goto-char (point-min))
-      (while (re-search-forward "{{\\([a-zA-Z0-9_.-]+\\)\\(?:[ \t]*|[ \t]*\\([a-zA-Z0-9_-]+\\)\\)?}}" nil t)
-        (setq changed t)
-        (let* ((var-sym (intern (concat ":" (match-string 1))))
-               (filter  (match-string 2))
-               (val     (plist-get vars var-sym))
-               (val-str (if val (format "%s" val) "")))
-          (let ((replacement
-                 (save-match-data
-                   (if (and filter (not (string-empty-p val-str)))
-                       (let* ((custom-filters (org-ssg--config-get :filters))
-                              (filter-fn      (or (cdr (assoc filter custom-filters))
-                                                  (cdr (assoc filter org-ssg-default-filters)))))
-                         (if filter-fn
-                             (funcall filter-fn val-str)
-                           (org-ssg--log :warn (format "Unknown filter: %s" filter))
-                           val-str))
-                     val-str))))
-            (replace-match replacement t t))))
-      (cons (buffer-string) changed))))
+  (org-ssg--replace-in-template
+   template
+   "{{\\([a-zA-Z0-9_.-]+\\)\\(?:[ \t]*|[ \t]*\\([a-zA-Z0-9_-]+\\)\\)?}}"
+   (lambda ()
+     (let* ((var-sym (intern (concat ":" (match-string 1))))
+            (filter  (match-string 2))
+            (val     (plist-get vars var-sym))
+            (val-str (if val (format "%s" val) "")))
+       (if (and filter (not (string-empty-p val-str)))
+           (let* ((custom-filters (org-ssg--config-get :filters))
+                  (filter-fn      (or (cdr (assoc filter custom-filters))
+                                      (cdr (assoc filter org-ssg-default-filters)))))
+             (if filter-fn
+                 (funcall filter-fn val-str)
+               (org-ssg--log :warn (format "Unknown filter: %s" filter))
+               val-str))
+         val-str)))))
 
 ;;; ============================================================================
 ;;; Org Export overrides & HTML generation
