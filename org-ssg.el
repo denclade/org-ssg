@@ -820,6 +820,7 @@ Variable output comes from e.g. `org-ssg--collect-file'
   (let* ((theme-dir (org-ssg--config-get :theme))
          (type      (or (plist-get post :type) "page"))
          (tmpl-name type)
+         
          (title     (or (plist-get post :title) ""))
          (template  (org-ssg--load-template tmpl-name theme-dir))
          (content   (org-ssg--org-to-html (plist-get post :source)))
@@ -835,19 +836,21 @@ Variable output comes from e.g. `org-ssg--collect-file'
          
          (js-html   (org-ssg--build-asset-html (plist-get post :js) post-dir
                                                "<script src=\"%s\"%s></script>\n  "))
-         ;; default variables
+         
          (base-vars (list :title title
                           :content content
+                          :url url
                           :date (if (string-empty-p date) "" (format-time-string "%d. %B %Y" (org-ssg--parse-date date)))
                           :tags (org-ssg--tags-html tags)
                           :reading-time (or (plist-get post :reading-time) "")
                           :slug (plist-get post :slug)))
          
-         ;; add user defined properties
-         (all-vars  (append base-vars
+         (post-vars (append base-vars
                             (cl-loop for (k v) on post by #'cddr
                                      unless (memq k '(:date :tags :reading-time :content :css :js :assets))
                                      nconc (list k (if v (if (stringp v) v (format "%s" v)) "")))))
+         
+         (all-vars  (append post-vars org-ssg--config))
          
          (inner     (car (org-ssg--render-template template all-vars theme-dir))))
   (org-ssg--wrap-base inner title url
