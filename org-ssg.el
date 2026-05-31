@@ -83,6 +83,10 @@ Bound dynamically; do not set this globally.")
 (defvar org-ssg-config-file ".ssg.el"
   "Name of the project-local configuration file.")
 
+(defconst org-ssg--core-keywords
+  '("TITLE" "DATE" "TYPE" "DRAFT" "LISTED" "TAGS" "FILETAGS" "CSS" "JS" "ASSETS" "DESCRIPTION")
+  "Keywords directly supported by org-ssg, achiving some kind of functionality.")
+
 (defvar org-ssg--global-tags-table nil
   "Hash table of tags with count of associated posts.
 Used to access global tag counts during post rendering.")
@@ -171,7 +175,10 @@ Resolve :theme relative to the themes/ subdirectory of :base-dir."
                              (mapcar (lambda (dir) (expand-file-name dir base)) static-val))
                             ;; Fallback: nil
                             (t nil)))))))
-    final))
+    (let ((hook (plist-get final :on-collect-post)))
+      (when hook
+        (setq final (plist-put final :on-collect-post (eval hook t))))
+      final)))
 
 (defun org-ssg--validate-config (config)
   "Validate the required fields in CONFIG, signaling a user error if invalid."
@@ -305,7 +312,6 @@ Asset paths are resolved relative to SOURCE-FILE and mirrored in OUTPUT-FILE."
        (string-equal (file-name-as-directory (file-truename path1))
                      (file-name-as-directory (file-truename path2)))))
 
-
 (defun org-ssg--ensure-absolute-url (url base-dir)
   "Return URL as an absolute path prefixed with BASE-DIR if it is relative."
   (if (or (string-prefix-p "/" url)
@@ -329,6 +335,19 @@ PATH-RESOLVER is an optional function applied to the source path (e.g., for SCSS
                       (attr-str (if (string-empty-p attrs) "" (concat " " attrs))))
                  (format template final-src attr-str)))
              items ""))
+
+(defun org-ssg--extract-custom-keywords (ast)
+  "Extract all non-core keywords from AST into a plist."
+  (let ((custom nil))
+    (org-element-map ast 'keyword
+      (lambda (el)
+        (let ((key (org-element-property :key el)))
+          (unless (member key org-ssg--core-keywords)
+            (let ((sym (intern (concat ":" (downcase (replace-regexp-in-string "_" "-" key)))))
+                  (val (org-element-property :value el)))
+              (unless (plist-member custom sym)
+                (setq custom (plist-put custom sym val))))))))
+    custom))
 
 ;;; ============================================================================
 ;;; Org Parsing
@@ -455,11 +474,10 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
            (file-type (org-ssg--extract-keyword ast "TYPE"))
            (inferred  (org-ssg--infer-type filepath source-dir))
            (aliases   (org-ssg--config-get :type-aliases))
-           (type      (or (when file-type (downcase file-type)) ; prio 1: #+TYPE: in der Datei
-                          (cdr (assoc inferred aliases))        ; prio 2: :type-aliases in .ssg.el
-                          inferred))                            ; prio 3: inferer file type
+           (raw-type    (or (when file-type (downcase file-type)) inferred))
+           (type        (or (cdr (assoc raw-type aliases)) raw-type))
            (description (org-ssg--extract-keyword ast "DESCRIPTION"))
-           (excerpt     (or (org-ssg--get-excerpt-org ast) ; try to extract a summary/excerpt
+           (excerpt     (or (org-ssg--get-excerpt-org ast)
                             description))
            (draft    (org-ssg--normalize-boolean
                       (org-ssg--extract-keyword ast "DRAFT")))
@@ -482,21 +500,18 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
            (relative (file-relative-name filepath source-dir))
            (output   (expand-file-name
                       (concat (file-name-sans-extension relative) ".html")
-                      output-dir)))
-      (list :title        title
-            :date         date
-            :type         type
-            :draft        draft
-            :listed       listed
-            :tags         tags
-            :slug         slug
-            :source       filepath
-            :reading-time (when (org-ssg--config-get :reading-time)
-                            (org-ssg--reading-time-from-ast ast))
-            :output       output
-            :assets       assets
-            :css          css
-            :js           js))))
+                      output-dir))
+           
+           (custom-props (org-ssg--extract-custom-keywords ast))
+           (base-post   (append (list :title title :date date :type type :draft draft :listed listed
+                                      :tags tags :slug slug :source filepath
+                                      :reading-time (when (org-ssg--config-get :reading-time)
+                                                      (org-ssg--reading-time-from-ast ast))
+                                      :output output :assets assets :css css :js js :excerpt excerpt)
+                                custom-props))
+           (hook        (org-ssg--config-get :on-collect-post)))
+      
+      (if hook (funcall hook base-post) base-post))))
 
 (defun org-ssg--collect (source-dir output-dir)
   "Return a list of post plists by scanning SOURCE-DIR recursively.
@@ -697,6 +712,9 @@ Variable output comes from e.g. `org-ssg--collect-file'
   "Return the full HTML string for POST rendered with its type template."
   (let* ((theme-dir (org-ssg--config-get :theme))
          (type      (or (plist-get post :type) "page"))
+         (tmpl-name (cond ((org-ssg--resolve-theme-file (concat type "-item.html") theme-dir)
+                           (concat type "-item"))
+                          (t type)))
          (title     (or (plist-get post :title) ""))
          (template  (org-ssg--load-template type theme-dir))
          (content   (org-ssg--org-to-html (plist-get post :source)))
@@ -706,24 +724,30 @@ Variable output comes from e.g. `org-ssg--collect-file'
 
          (post-dir  (file-name-directory url))
          
-         (css-html  (org-ssg--build-asset-html (plist-get post :css) post-dir 
-                                                  "<link rel=\"stylesheet\" href=\"%s\"%s>\n  " 
-                                                  #'org-ssg--resolve-css-path))
-                                                  
-         (js-html   (org-ssg--build-asset-html (plist-get post :js) post-dir 
-                                                  "<script src=\"%s\"%s></script>\n  "))
-         (inner     (car (org-ssg--render-template template
-                                                   (list :title        title
-                                                         :content      content
-                                                         ;; TODO: configurable date string!
-                                                         :date         (format-time-string "%d. %B %Y" (org-ssg--parse-date date))
-                                                         :tags         (org-ssg--tags-html tags)
-                                                         :reading-time (or (plist-get post :reading-time) "")
-                                                         :slug         (plist-get post :slug))
-                                                   theme-dir))))
-    (org-ssg--wrap-base inner title url
-                        (list :extra-css css-html
-                              :extra-js  js-html))))
+         (css-html  (org-ssg--build-asset-html (plist-get post :css) post-dir
+                                               "<link rel=\"stylesheet\" href=\"%s\"%s>\n  "
+                                               #'org-ssg--resolve-css-path))
+         
+         (js-html   (org-ssg--build-asset-html (plist-get post :js) post-dir
+                                               "<script src=\"%s\"%s></script>\n  "))
+         ;; default variables
+         (base-vars (list :title title
+                          :content content
+                          :date (if (string-empty-p date) "" (format-time-string "%d. %B %Y" (org-ssg--parse-date date)))
+                          :tags (org-ssg--tags-html tags)
+                          :reading-time (or (plist-get post :reading-time) "")
+                          :slug (plist-get post :slug)))
+         
+         ;; add user defined properties
+         (all-vars  (append base-vars
+                            (cl-loop for (k v) on post by #'cddr
+                                     unless (memq k '(:date :tags :reading-time :content :css :js :assets))
+                                     nconc (list k (if v (if (stringp v) v (format "%s" v)) "")))))
+         
+         (inner     (car (org-ssg--render-template template all-vars theme-dir))))
+  (org-ssg--wrap-base inner title url
+                      (list :extra-css css-html
+                            :extra-js  js-html))))
 
 (defun org-ssg--write-post (post)
   "Render POST and write it to its output path."
@@ -750,20 +774,28 @@ Variable output comes from e.g. `org-ssg--collect-file'
 ;;; ============================================================================
 
 (defun org-ssg--render-post-item (post theme-dir)
-  "Return the HTML string for POST rendered as a list item using THEME-DIR."
-  (let* ((title (or (plist-get post :title) "Untitled"))
-         (date  (or (plist-get post :date) ""))
-         (tags  (plist-get post :tags))
-         (url   (org-ssg--post-site-url post))
-         (excerpt-html (org-ssg--org-string-to-html (plist-get post :excerpt))))
-    (car (org-ssg--render-template
-          (org-ssg--load-template "partials/post-item" theme-dir)
-          (list :title title
-                :url   url
-                :date  date
-                :tags  (if tags (string-join tags ", ") "")
-                :excerpt excerpt-html)
-          theme-dir))))
+  "Return the HTML string for POST rendered as a list item using THEME-DIR.
+Checks theme-dir for TYPE-item.html, if not available uses post-item."
+(let* ((title      (or (plist-get post :title) "Untitled"))
+         (date       (or (plist-get post :date) ""))
+         (tags       (plist-get post :tags))
+         (url        (org-ssg--post-site-url post))
+         (type       (or (plist-get post :type) "post"))
+         (excerpt    (org-ssg--org-string-to-html (plist-get post :excerpt)))
+         
+         (partial    (concat "partials/" type "-list-item"))
+         (resolved   (org-ssg--resolve-theme-file (concat partial ".html") theme-dir))
+         (tmpl-name  (if resolved partial "partials/post-item"))
+         
+         (base-vars  (list :title title :url url :date date
+                           :tags (if tags (string-join tags ", ") "")
+                           :excerpt excerpt))
+         (all-vars   (append base-vars
+                             (cl-loop for (k v) on post by #'cddr
+                                      unless (memq k '(:tags :date :excerpt :css :js :assets))
+                                      nconc (list k (if v (if (stringp v) v (format "%s" v)) ""))))))
+    
+    (car (org-ssg--render-template (org-ssg--load-template tmpl-name theme-dir) all-vars theme-dir))))
 
 (defun org-ssg--render-post-list (posts theme-dir)
   "Return an HTML string of concatenated list items for POSTS using THEME-DIR."
@@ -839,6 +871,50 @@ POSTS is the list of posts to render on this page."
                    do (org-ssg--write-index-page
                        page-posts i total output-dir))))
     (error (org-ssg--log :warn (format "Failed to generate index: %s"
+                                       (error-message-string err))))))
+
+(defun org-ssg--write-type-index-page (plural-type posts page-num total-pages output-dir)
+  "Write type-specific index page for POSTS, PAGE-NUM of TOTAL-PAGES to OUTPUT-DIR/PLURAL-TYPE/."
+  (let* ((theme-dir (org-ssg--config-get :theme))
+         (dir       (expand-file-name plural-type output-dir))
+         (filename  (if (= page-num 1) "index.html" (format "page-%d.html" page-num)))
+         (output    (expand-file-name filename dir))
+         (resolved  (org-ssg--resolve-theme-file (concat plural-type ".html") theme-dir))
+         (tmpl-name (if resolved plural-type "index"))
+         (template  (org-ssg--load-template tmpl-name theme-dir))
+         (inner     (car (org-ssg--render-template template
+                                                   (list :site-title  (org-ssg--config-get :site-title)
+                                                         :description (org-ssg--config-get :description)
+                                                         :posts       (org-ssg--render-post-list posts theme-dir)
+                                                         :pagination  (org-ssg--pagination-html
+                                                                       page-num total-pages theme-dir))
+                                                   theme-dir)))
+         (html      (org-ssg--wrap-base inner (capitalize plural-type))))
+    (make-directory dir t)
+    (write-region html nil output)
+    (org-ssg--log :info (format "Rendered %s index: %s" plural-type output))))
+
+(defun org-ssg--generate-type-indices (all-posts output-dir)
+  "Generate paginated index pages for each type mapped in :type-aliases.
+Generats it for ALL-POSTS and exports to OUTPUT-DIR"
+  (condition-case err
+      (let ((aliases  (org-ssg--config-get :type-aliases))
+            (per-page (or (org-ssg--config-get :per-page) 10)))
+        (dolist (alias aliases)
+          (let* ((plural-type (car alias))
+                 (type        (cdr alias))
+                 (type-posts  (org-ssg--sort-posts-by-date
+                               (cl-remove-if-not
+                                (lambda (p) (and (plist-get p :listed)
+                                                 (string= (plist-get p :type) type)))
+                                all-posts))))
+            (when type-posts
+              (let* ((pages (org-ssg--paginate type-posts per-page))
+                     (total (length pages)))
+                (cl-loop for page-posts in pages
+                         for i from 1
+                         do (org-ssg--write-type-index-page plural-type page-posts i total output-dir)))))))
+    (error (org-ssg--log :warn (format "Failed to generate type indices: %s"
                                        (error-message-string err))))))
 
 ;;; ============================================================================
@@ -1147,6 +1223,7 @@ SITE-TITLE supplies the feed title."
             (org-ssg--copy-theme-static output theme-dir)
             (org-ssg--render-all posts)
             (org-ssg--generate-index posts output)
+            (org-ssg--generate-type-indices posts output)
             (org-ssg--generate-tags posts output)
             (org-ssg--generate-feeds posts output)
             (org-ssg--generate-sitemap posts output)
