@@ -914,36 +914,49 @@ Variable output comes from e.g. `org-ssg--collect-file'
 (defun org-ssg--write-index-page (posts page-num total-pages output-dir &optional plural-type)
   "Write index page PAGE-NUM of TOTAL-PAGES to OUTPUT-DIR.
 POSTS is the list of posts to render.  If PLURAL-TYPE is provided,
-it writes to a type-specific subdirectory and uses its template."
+it writes to a type-specific subdirectory and uses its template or 'posts' as fallback."
   (let* ((theme-dir  (org-ssg--config-get :theme))
-         (dir        (if plural-type
-                         (expand-file-name plural-type output-dir)
-                       output-dir))
-         (filename   (if (= page-num 1) "index.html" (format "page-%d.html" page-num)))
-         (output     (expand-file-name filename dir))
-         (tmpl-name  (if (and plural-type
-                              (org-ssg--resolve-theme-file (concat plural-type ".html") theme-dir))
-                         plural-type
-                       "index"))
-         (page-title (if plural-type
-                         (capitalize plural-type)
-                       (org-ssg--config-get :site-title)))
-         
-         (template   (org-ssg--load-template tmpl-name theme-dir))
-         (inner      (car (org-ssg--render-template template
-                                                    (list :site-title  (org-ssg--config-get :site-title)
-                                                          :description (org-ssg--config-get :description)
-                                                          :posts       posts
-                                                          :pagination  (org-ssg--pagination-html
-                                                                        page-num total-pages theme-dir))
-                                                    theme-dir)))
-         (html       (org-ssg--wrap-base inner page-title)))
+         ;; retrieve template
+         (tmpl-name  (cond
+                      ((and plural-type (org-ssg--resolve-theme-file (concat plural-type ".html") theme-dir))
+                       plural-type)
+                      ((and plural-type (org-ssg--resolve-theme-file "posts.html" theme-dir))
+                       "posts")
+                      ((and (not plural-type) (org-ssg--resolve-theme-file "index.html" theme-dir))
+                       "index")
+                      (t nil))))
     
-    (make-directory dir t)
-    (write-region html nil output)
-    (org-ssg--log :info (format "Rendered %s: %s"
-                                (if plural-type (format "%s index" plural-type) "index")
-                                output))))
+    (if (not tmpl-name)
+        (when (= page-num 1)
+          (org-ssg--log :warn (format "Skipping '%s' index: No template found (%s.html or posts.html)"
+                                      (or plural-type "root")
+                                      (or plural-type "index"))))
+      
+      (let* ((dir        (if plural-type
+                             (expand-file-name plural-type output-dir)
+                           output-dir))
+             (filename   (if (= page-num 1) "index.html" (format "page-%d.html" page-num)))
+             (output     (expand-file-name filename dir))
+             (page-title (if plural-type
+                             (capitalize plural-type)
+                           (org-ssg--config-get :site-title)))
+             
+             (template   (org-ssg--load-template tmpl-name theme-dir))
+             (inner      (car (org-ssg--render-template template
+                                                        (list :site-title  (org-ssg--config-get :site-title)
+                                                              :description (org-ssg--config-get :description)
+                                                              :posts       posts
+                                                              :pagination  (org-ssg--pagination-html
+                                                                            page-num total-pages theme-dir))
+                                                        theme-dir)))
+             (html       (org-ssg--wrap-base inner page-title)))
+        
+        (make-directory dir t)
+        (write-region html nil output)
+        (org-ssg--log :info (format "Rendered %s: %s"
+                                    (if plural-type (format "%s index" plural-type) "index")
+                                    output))))))
+          
 
 (defun org-ssg--generate-index (all-posts output-dir)
   "Generate paginated index pages from listed posts in ALL-POSTS to OUTPUT-DIR."
