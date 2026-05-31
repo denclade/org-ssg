@@ -83,6 +83,12 @@ Bound dynamically; do not set this globally.")
 (defvar org-ssg-config-file ".ssg.el"
   "Name of the project-local configuration file.")
 
+(defvar org-ssg-default-filters
+  '(("date"     . (lambda (val) (format-time-string "%d. %B %Y" (org-ssg--parse-date val))))
+    ("upcase"   . upcase)
+    ("downcase" . downcase))
+  "Alist of default template filters mapping string names to functions.")
+
 (defconst org-ssg--core-keywords
   '("TITLE" "DATE" "TYPE" "DRAFT" "LISTED" "TAGS" "FILETAGS" "CSS" "JS" "ASSETS" "DESCRIPTION")
   "Keywords directly supported by org-ssg, achiving some kind of functionality.")
@@ -725,12 +731,12 @@ Uses the corresponding theme file from THEME-DIR."
                (replacement val-str))
           
           (when (and filter (not (string-empty-p val-str)))
-            (pcase filter
-              ;; filters
-              ("date"     (setq replacement (format-time-string "%d. %B %Y" (org-ssg--parse-date val-str))))
-              ("upcase"   (setq replacement (upcase val-str)))
-              ("downcase" (setq replacement (downcase val-str)))
-              (_          (org-ssg--log :warn (format "Unknown filter: %s" filter)))))
+            (let* ((custom-filters (org-ssg--config-get :filters))
+                   (filter-fn      (or (cdr (assoc filter custom-filters))
+                                       (cdr (assoc filter org-ssg-default-filters)))))
+              (if filter-fn
+                  (setq replacement (funcall filter-fn val-str))
+                (org-ssg--log :warn (format "Unknown filter: %s" filter)))))
           
           (replace-match replacement t t)))
       (cons (buffer-string) changed))))
@@ -940,7 +946,7 @@ it writes to a type-specific subdirectory and uses its template."
          (inner      (car (org-ssg--render-template template
                                                     (list :site-title  (org-ssg--config-get :site-title)
                                                           :description (org-ssg--config-get :description)
-                                                          :posts       posts 
+                                                          :posts       posts
                                                           :pagination  (org-ssg--pagination-html
                                                                         page-num total-pages theme-dir))
                                                     theme-dir)))
@@ -948,8 +954,8 @@ it writes to a type-specific subdirectory and uses its template."
     
     (make-directory dir t)
     (write-region html nil output)
-    (org-ssg--log :info (format "Rendered %s: %s" 
-                                (if plural-type (format "%s index" plural-type) "index") 
+    (org-ssg--log :info (format "Rendered %s: %s"
+                                (if plural-type (format "%s index" plural-type) "index")
                                 output))))
 
 (defun org-ssg--generate-index (all-posts output-dir)
