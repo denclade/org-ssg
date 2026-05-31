@@ -595,23 +595,13 @@ Returns a cons cell (RESULT . CHANGED-P)."
     (cons result changed)))
 
 (defun org-ssg--render-template (template vars theme-dir)
-  "Replace {{key}} placeholders in TEMPLATE by values from VARS plist.
-Process {{include}} directives first using THEME-DIR.
-Return a cons cell (RESULT . CHANGED-P).  CHANGED-P is non-nil if a replacement took place."
-  (let* ((include-tuple (org-ssg--process-includes template theme-dir))
-         (result        (car include-tuple))
-         (new-result result)
-         (changed       (cdr include-tuple)))
-    (cl-loop for (key value) on vars by #'cddr do
-             (setq new-result
-                   (replace-regexp-in-string
-                    (concat "{{" (substring (symbol-name key) 1) "}}")
-                    (or value "")
-                    new-result t t)))
-    (unless (string= result new-result)
-      (setq changed t)
-      )
-    (cons new-result changed)))
+  "Process a complete TEMPLATE string in steps: includes, loops, conditions, vars."
+  (let* ((step1 (org-ssg--process-includes template theme-dir))
+         (step2 (org-ssg--process-loops (car step1) vars theme-dir))
+         (step3 (org-ssg--process-ifs (car step2) vars theme-dir))
+         (step4 (org-ssg--process-vars (car step3) vars))
+         (changed (or (cdr step1) (cdr step2) (cdr step3) (cdr step4))))
+    (cons (car step4) changed)))
 
 (defun org-ssg--render-recursive (html vars theme-dir)
   "Recursively resolve template tags in HTML up to max depth.
@@ -651,6 +641,99 @@ All global configuration variables are also available in the template."
                            org-ssg--config))
          (rendered  (org-ssg--render-recursive base all-vars theme-dir)))
     (org-ssg--inject-live-reload rendered)))
+
+(defun org-ssg--post-to-vars (post)
+  "Convert a POST plist into a flat vars plist for item template rendering."
+  (let* ((title      (or (plist-get post :title) "Untitled"))
+         (date       (or (plist-get post :date) ""))
+         (tags       (plist-get post :tags))
+         (url        (org-ssg--post-site-url post))
+         (excerpt    (org-ssg--org-string-to-html (plist-get post :excerpt)))
+         (base-vars  (list :title title :url url :date date
+                           :tags (if tags (string-join tags ", ") "")
+                           :excerpt excerpt)))
+    (append base-vars
+            (cl-loop for (k v) on post by #'cddr
+                     unless (memq k '(:tags :date :excerpt :css :js :assets))
+                     nconc (list k (if v (if (stringp v) v (format "%s" v)) ""))))))
+
+(defun org-ssg--process-loops (template vars theme-dir)
+  "Process {{#each var}}...{{/each}} blocks in TEMPLATE.
+VARS must contain a list of plists under the matched key.
+Uses the corresponding theme file from THEME-DIR."
+  (let ((changed nil))
+    (with-temp-buffer
+      (insert template)
+      (goto-char (point-min))
+      ;; {{#each list_name}} content {{/each}}
+      (while (re-search-forward "{{\\#each[ \t]+\\([^}]+\\)}}\n?\\(\\(?:.\\|\n\\)*?\\){{/each}}" nil t)
+        (setq changed t)
+        (let* ((list-key   (intern (concat ":" (match-string 1))))
+               (inner-tmpl (match-string 2))
+               (items      (plist-get vars list-key))
+               (replacement ""))
+          (when (listp items)
+            (setq replacement
+                  (mapconcat (lambda (item)
+                               (let ((item-vars (if (plist-get item :source)
+                                                    (org-ssg--post-to-vars item)
+                                                  item)))
+                                 ;;Render inner template for each entry
+                                 (car (org-ssg--render-template inner-tmpl item-vars theme-dir))))
+                             items "")))
+          (replace-match replacement t t)))
+      (cons (buffer-string) changed))))
+
+(defun org-ssg--process-ifs (template vars theme-dir)
+  "Process {{#if var}}...{{else}}...{{/if}} blocks in TEMPLATE.
+VARS contains the property list to check.
+Uses the corresponding theme file from THEME-DIR."
+  (let ((changed nil))
+    (with-temp-buffer
+      (insert template)
+      (goto-char (point-min))
+      ;;  {{#if var}} ... [{{else}} ...] {{/if}}
+      (while (re-search-forward "{{\\#if[ \t]+\\([^}]+\\)}}\n?\\(\\(?:.\\|\n\\)*?\\)\\(?:{{else}}\n?\\(\\(?:.\\|\n\\)*?\\)\\)?{{/if}}" nil t)
+        (setq changed t)
+        (let* ((var-sym    (intern (concat ":" (match-string 1))))
+               (if-block   (match-string 2))
+               (else-block (match-string 3))
+               (val        (plist-get vars var-sym))
+               (truthy     (and val
+                                (not (equal val ""))
+                                (not (equal (downcase (format "%s" val)) "false"))))
+               (replacement (if truthy if-block (or else-block ""))))
+          
+          (setq replacement (car (org-ssg--render-template replacement vars theme-dir)))
+          (replace-match replacement t t)))
+      (cons (buffer-string) changed))))
+
+(defun org-ssg--process-vars (template vars)
+  "Replace {{var}} or {{var | filter}} from VARS in TEMPLATE."
+  (let ((changed nil))
+    (with-temp-buffer
+      (insert template)
+      (goto-char (point-min))
+      ;; e.g. {{ title }} or {{ date | date_format }}
+      ;; Ignore blocks starting with #or /.
+      (while (re-search-forward "{{\\([a-zA-Z0-9_-]+\\)\\(?:[ \t]*|[ \t]*\\([a-zA-Z0-9_-]+\\)\\)?}}" nil t)
+        (setq changed t)
+        (let* ((var-sym (intern (concat ":" (match-string 1))))
+               (filter  (match-string 2))
+               (val     (plist-get vars var-sym))
+               (val-str (if val (format "%s" val) ""))
+               (replacement val-str))
+          
+          (when (and filter (not (string-empty-p val-str)))
+            (pcase filter
+              ;; filters
+              ("date"     (setq replacement (format-time-string "%d. %B %Y" (org-ssg--parse-date val-str))))
+              ("upcase"   (setq replacement (upcase val-str)))
+              ("downcase" (setq replacement (downcase val-str)))
+              (_          (org-ssg--log :warn (format "Unknown filter: %s" filter)))))
+          
+          (replace-match replacement t t)))
+      (cons (buffer-string) changed))))
 
 ;;; ============================================================================
 ;;; Org Export overrides & HTML generation
@@ -835,25 +918,39 @@ Checks theme-dir for TYPE-item.html, if not available uses post-item."
                                          :next next-html)
                                    theme-dir))))
 
-(defun org-ssg--write-index-page (posts page-num total-pages output-dir)
+(defun org-ssg--write-index-page (posts page-num total-pages output-dir &optional plural-type)
   "Write index page PAGE-NUM of TOTAL-PAGES to OUTPUT-DIR.
-POSTS is the list of posts to render on this page."
-  (let* ((theme-dir (org-ssg--config-get :theme))
-         (filename  (if (= page-num 1) "index.html"
-                      (format "page-%d.html" page-num)))
-         (output    (expand-file-name filename output-dir))
-         (template  (org-ssg--load-template "index" theme-dir))
-         (inner     (car (org-ssg--render-template template
-                                                   (list :site-title  (org-ssg--config-get :site-title)
-                                                         :description (org-ssg--config-get :description)
-                                                         :posts       (org-ssg--render-post-list posts theme-dir)
-                                                         :pagination  (org-ssg--pagination-html
-                                                                       page-num total-pages theme-dir))
-                                                   theme-dir)))
-         (html      (org-ssg--wrap-base inner (org-ssg--config-get :site-title))))
-    (make-directory output-dir t)
+POSTS is the list of posts to render.  If PLURAL-TYPE is provided,
+it writes to a type-specific subdirectory and uses its template."
+  (let* ((theme-dir  (org-ssg--config-get :theme))
+         (dir        (if plural-type
+                         (expand-file-name plural-type output-dir)
+                       output-dir))
+         (filename   (if (= page-num 1) "index.html" (format "page-%d.html" page-num)))
+         (output     (expand-file-name filename dir))
+         (tmpl-name  (if (and plural-type
+                              (org-ssg--resolve-theme-file (concat plural-type ".html") theme-dir))
+                         plural-type
+                       "index"))
+         (page-title (if plural-type
+                         (capitalize plural-type)
+                       (org-ssg--config-get :site-title)))
+         
+         (template   (org-ssg--load-template tmpl-name theme-dir))
+         (inner      (car (org-ssg--render-template template
+                                                    (list :site-title  (org-ssg--config-get :site-title)
+                                                          :description (org-ssg--config-get :description)
+                                                          :posts       posts 
+                                                          :pagination  (org-ssg--pagination-html
+                                                                        page-num total-pages theme-dir))
+                                                    theme-dir)))
+         (html       (org-ssg--wrap-base inner page-title)))
+    
+    (make-directory dir t)
     (write-region html nil output)
-    (org-ssg--log :info (format "Rendered index: %s" output))))
+    (org-ssg--log :info (format "Rendered %s: %s" 
+                                (if plural-type (format "%s index" plural-type) "index") 
+                                output))))
 
 (defun org-ssg--generate-index (all-posts output-dir)
   "Generate paginated index pages from listed posts in ALL-POSTS to OUTPUT-DIR."
@@ -872,27 +969,6 @@ POSTS is the list of posts to render on this page."
                        page-posts i total output-dir))))
     (error (org-ssg--log :warn (format "Failed to generate index: %s"
                                        (error-message-string err))))))
-
-(defun org-ssg--write-type-index-page (plural-type posts page-num total-pages output-dir)
-  "Write type-specific index page for POSTS, PAGE-NUM of TOTAL-PAGES to OUTPUT-DIR/PLURAL-TYPE/."
-  (let* ((theme-dir (org-ssg--config-get :theme))
-         (dir       (expand-file-name plural-type output-dir))
-         (filename  (if (= page-num 1) "index.html" (format "page-%d.html" page-num)))
-         (output    (expand-file-name filename dir))
-         (resolved  (org-ssg--resolve-theme-file (concat plural-type ".html") theme-dir))
-         (tmpl-name (if resolved plural-type "index"))
-         (template  (org-ssg--load-template tmpl-name theme-dir))
-         (inner     (car (org-ssg--render-template template
-                                                   (list :site-title  (org-ssg--config-get :site-title)
-                                                         :description (org-ssg--config-get :description)
-                                                         :posts       (org-ssg--render-post-list posts theme-dir)
-                                                         :pagination  (org-ssg--pagination-html
-                                                                       page-num total-pages theme-dir))
-                                                   theme-dir)))
-         (html      (org-ssg--wrap-base inner (capitalize plural-type))))
-    (make-directory dir t)
-    (write-region html nil output)
-    (org-ssg--log :info (format "Rendered %s index: %s" plural-type output))))
 
 (defun org-ssg--generate-type-indices (all-posts output-dir)
   "Generate paginated index pages for each type mapped in :type-aliases.
@@ -913,7 +989,7 @@ Generats it for ALL-POSTS and exports to OUTPUT-DIR"
                      (total (length pages)))
                 (cl-loop for page-posts in pages
                          for i from 1
-                         do (org-ssg--write-type-index-page plural-type page-posts i total output-dir)))))))
+                         do (org-ssg--write-index-page page-posts i total output-dir plural-type)))))))
     (error (org-ssg--log :warn (format "Failed to generate type indices: %s"
                                        (error-message-string err))))))
 
