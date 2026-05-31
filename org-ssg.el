@@ -428,7 +428,7 @@ The type is the name of the immediate subdirectory of SOURCE-DIR."
 ;;; Collection
 ;;; ============================================================================
 
-(defun org-ssg--resolve-local-assets (filepath assets-list)
+(defun org-ssg--collect-assets-explicit-from-properties (filepath assets-list)
   "Return absolute paths for all relative files under FILEPATH in ASSETS-LIST.
 ASSETS-LIST contains lists of e.g. CSS, JS or EXTRA assets."
 (let ((file-dir (file-name-directory filepath))
@@ -452,7 +452,7 @@ ASSETS-LIST contains lists of e.g. CSS, JS or EXTRA assets."
             (org-ssg--log :warn (format "Local asset missing: %s in %s" path filepath)))))))
     (nreverse resolved)))
 
-(defun org-ssg--collect-assets (ast source-file)
+(defun org-ssg--collect-assets-implicit-from-ast (ast source-file)
   "Return a list of absolute paths for all file: links found in AST.
 Paths are resolved relative to SOURCE-FILE and filtered to those that exist."
   (let ((source-dir (file-name-directory source-file)))
@@ -477,33 +477,21 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
     (let* ((ast      (org-element-parse-buffer))
            (title    (org-ssg--extract-keyword ast "TITLE"))
            (date     (org-ssg--extract-keyword ast "DATE"))
-           ;; TODO: Simplify the type handling, got out of hand. Thin about
-           ;; what is important in types?
-           ;; Actually it should be like this:
-           ;; Either a user enters a type, if so this is the one to be used.
-           ;; If no type is entered the type is inferred by the parent dir.
-           ;; Parent dir -> Actually the first one after root /
-           ;; If there is no parent dir, use a default type
-           ;; aliases are just used for plural usage, this is required for
-           ;; the list template files. Could be looked up in the template
-           ;; rendering.
+
+           ;; Type
            (file-type (org-ssg--extract-keyword ast "TYPE"))
            (inferred  (org-ssg--infer-type filepath source-dir))
-           (aliases   (org-ssg--config-get :type-aliases))
-           (raw-type    (or (when file-type (downcase file-type)) inferred))
-           (type        (or (cdr (assoc raw-type aliases)) raw-type))
-           ;; end type stuff.
+           (type      (or (when file-type (downcase file-type)) inferred "page"))
 
-           ;; TODO: description vs. excerpt, should we really keep both?
            (description (org-ssg--extract-keyword ast "DESCRIPTION"))
            (excerpt     (or (org-ssg--get-excerpt-org ast)
                             description))
 
-           ;; TODO: Listed vs draft. Do we really require both?
            (draft    (org-ssg--normalize-boolean
                       (org-ssg--extract-keyword ast "DRAFT")))
            (listed   (org-ssg--normalize-boolean
                       (org-ssg--extract-keyword ast "LISTED") t))
+           
            (tags     (org-ssg--parse-tags
                       (or (org-ssg--extract-keyword ast "TAGS")
                           (org-ssg--extract-keyword ast "FILETAGS"))))
@@ -512,11 +500,12 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
            (js          (mapcar #'org-ssg--parse-asset-str (org-ssg--extract-keyword-list ast "JS")))
            (extra-assets (org-ssg--extract-keyword-list ast "ASSETS"))
            (file-dir  (file-name-directory filepath))
-           (local-res   (org-ssg--resolve-local-assets filepath
+
+           (local-res   (org-ssg--collect-assets-explicit-from-properties filepath
                                                        (append (mapcar #'car css)
                                                                (mapcar #'car js)
                                                                extra-assets)))
-           (assets    (append (org-ssg--collect-assets ast filepath) local-res))
+           (assets    (append (org-ssg--collect-assets-implicit-from-ast ast filepath) local-res))
            
            (relative (file-relative-name filepath source-dir))
            (output   (expand-file-name

@@ -242,5 +242,11 @@ These are the built-in variables available in your templates. Any custom frontma
 ** Feeds
 RSS and Atom feeds are automatically generated at =/rss.xml= and =/atom.xml= from all published posts. A sitemap is generated at =/sitemap.xml=.
 
+** Whats going on?
+1. You start with =org-ssg-build=
+2. It searches for all .org files, recursivly from root
+3. It collects the root files and reads out alle properties
+4. It copies required / referenced static assets
+
 ** License
 org-ssg is free software, released under the GNU General Public License version 3 or later. See the =LICENSE= file for details. Based on org-grimoire by Strahinja Piperac.
