@@ -583,22 +583,23 @@ Fall back to the default theme.  Logs an error and returns the original placehol
 Searches THEME-DIR fist, falls back to default-theme if not found.
 Logs an error and inserts an HTML comment if the file is missing.
 Returns a cons cell (RESULT . CHANGED-P)."
-  (let* ((changed nil)
-         (result
-          (replace-regexp-in-string
-           "{{include \\([^}]+\\)}}"
-           (lambda (match)
-             (setq changed t)
-             (let* ((filename (match-string 1 match))
-                    (resolved (org-ssg--resolve-theme-file filename theme-dir)))
-               (if resolved
-                   (with-temp-buffer
-                     (insert-file-contents resolved)
-                     (buffer-string))
-                 (org-ssg--log :error (format "Include not found: %s" filename))
-                 (format "" filename))))
-           template)))
-    (cons result changed)))
+  (let ((changed nil))
+    (with-temp-buffer
+      (insert template)
+      (goto-char (point-min))
+      ;; Sucht nach {{include partials/file.html}} (ignoriert Leerzeichen am Ende)
+      (while (re-search-forward "{{include[ \t]+\\([^} \t\n]+\\)[ \t]*}}" nil t)
+        (setq changed t)
+        (let* ((filename (match-string 1))
+               (resolved (org-ssg--resolve-theme-file filename theme-dir)))
+          (if resolved
+              (let ((content (with-temp-buffer
+                               (insert-file-contents resolved)
+                               (buffer-string))))
+                (replace-match content t t))
+            (org-ssg--log :error (format "Include not found: %s" filename))
+            (replace-match (format "" filename) t t))))
+      (cons (buffer-string) changed))))
 
 (defun org-ssg--render-template (template vars theme-dir)
   "Process a complete TEMPLATE string in steps: includes, loops, conditions, vars."
@@ -664,54 +665,62 @@ All global configuration variables are also available in the template."
                      nconc (list k (if v (if (stringp v) v (format "%s" v)) ""))))))
 
 (defun org-ssg--process-loops (template vars theme-dir)
-  "Process {{#each var}}...{{/each}} blocks in TEMPLATE.
-VARS must contain a list of plists under the matched key.
-Uses the corresponding theme file from THEME-DIR."
+  "Process {{#each list}} or {{#each list as item}}...{{/each}} blocks in TEMPLATE."
   (let ((changed nil))
     (with-temp-buffer
       (insert template)
       (goto-char (point-min))
-      ;; {{#each list_name}} content {{/each}}
-      (while (re-search-forward "{{\\#each[ \t]+\\([^}]+\\)}}\n?\\(\\(?:.\\|\n\\)*?\\){{/each}}" nil t)
+      (while (re-search-forward "{{\\#each[ \t]+\\([a-zA-Z0-9_-]+\\)\\(?:[ \t]+as[ \t]+\\([a-zA-Z0-9_-]+\\)\\)?}}[ \t]*\n?\\(\\(?:.\\|\n\\)*?\\){{/each}}" nil t)
         (setq changed t)
         (let* ((list-key   (intern (concat ":" (match-string 1))))
-               (inner-tmpl (match-string 2))
-               (items      (plist-get vars list-key))
-               (replacement ""))
-          (when (listp items)
-            (setq replacement
-                  (mapconcat (lambda (item)
-                               (let ((item-vars (if (plist-get item :source)
-                                                    (org-ssg--post-to-vars item)
-                                                  item)))
-                                 ;;Render inner template for each entry
-                                 (car (org-ssg--render-template inner-tmpl item-vars theme-dir))))
-                             items "")))
-          (replace-match replacement t t)))
+               (as-var     (match-string 2))
+               (inner-tmpl (match-string 3))
+               (items      (plist-get vars list-key)))
+          (let ((replacement
+                 (save-match-data
+                   (if (listp items)
+                       (mapconcat (lambda (item)
+                                    (let* ((base-item-vars (if (plist-get item :source)
+                                                               (org-ssg--post-to-vars item)
+                                                             item))
+                                           (item-vars (if as-var
+                                                          (let ((prefixed nil)
+                                                                (prefix (concat ":" as-var ".")))
+                                                            (cl-loop for (k v) on base-item-vars by #'cddr
+                                                                     do (setq prefixed (plist-put prefixed
+                                                                                                  (intern (concat prefix (substring (symbol-name k) 1)))
+                                                                                                  v)))
+                                                            prefixed)
+                                                        base-item-vars)))
+                                      (car (org-ssg--render-template inner-tmpl (append item-vars vars) theme-dir))))
+                                  items "")
+                     ""))))
+            (replace-match replacement t t))))
       (cons (buffer-string) changed))))
 
 (defun org-ssg--process-ifs (template vars theme-dir)
-  "Process {{#if var}}...{{else}}...{{/if}} blocks in TEMPLATE.
-VARS contains the property list to check.
-Uses the corresponding theme file from THEME-DIR."
+  "Process {{#if var}}...{{else}}...{{/if}} blocks in TEMPLATE."
   (let ((changed nil))
     (with-temp-buffer
       (insert template)
       (goto-char (point-min))
-      ;;  {{#if var}} ... [{{else}} ...] {{/if}}
-      (while (re-search-forward "{{\\#if[ \t]+\\([^}]+\\)}}\n?\\(\\(?:.\\|\n\\)*?\\)\\(?:{{else}}\n?\\(\\(?:.\\|\n\\)*?\\)\\)?{{/if}}" nil t)
+      (while (re-search-forward "{{\\#if[ \t]+\\([^}]+\\)}}\n?\\(\\(?:.\\|\n\\)*?\\){{/if}}" nil t)
         (setq changed t)
         (let* ((var-sym    (intern (concat ":" (match-string 1))))
-               (if-block   (match-string 2))
-               (else-block (match-string 3))
+               (full-block (match-string 2))
                (val        (plist-get vars var-sym))
                (truthy     (and val
                                 (not (equal val ""))
-                                (not (equal (downcase (format "%s" val)) "false"))))
-               (replacement (if truthy if-block (or else-block ""))))
-          
-          (setq replacement (car (org-ssg--render-template replacement vars theme-dir)))
-          (replace-match replacement t t)))
+                                (not (equal (downcase (format "%s" val)) "false")))))
+          (let ((replacement
+                 (save-match-data
+                   (let ((if-block full-block)
+                         (else-block ""))
+                     (when (string-match "\\(\\(?:.\\|\n\\)*?\\){{else}}\n?\\(\\(?:.\\|\n\\)*\\)" full-block)
+                       (setq if-block   (match-string 1 full-block))
+                       (setq else-block (match-string 2 full-block)))
+                     (car (org-ssg--render-template (if truthy if-block else-block) vars theme-dir))))))
+            (replace-match replacement t t))))
       (cons (buffer-string) changed))))
 
 (defun org-ssg--process-vars (template vars)
@@ -720,25 +729,24 @@ Uses the corresponding theme file from THEME-DIR."
     (with-temp-buffer
       (insert template)
       (goto-char (point-min))
-      ;; e.g. {{ title }} or {{ date | date_format }}
-      ;; Ignore blocks starting with #or /.
-      (while (re-search-forward "{{\\([a-zA-Z0-9_-]+\\)\\(?:[ \t]*|[ \t]*\\([a-zA-Z0-9_-]+\\)\\)?}}" nil t)
+      (while (re-search-forward "{{\\([a-zA-Z0-9_.-]+\\)\\(?:[ \t]*|[ \t]*\\([a-zA-Z0-9_-]+\\)\\)?}}" nil t)
         (setq changed t)
         (let* ((var-sym (intern (concat ":" (match-string 1))))
                (filter  (match-string 2))
                (val     (plist-get vars var-sym))
-               (val-str (if val (format "%s" val) ""))
-               (replacement val-str))
-          
-          (when (and filter (not (string-empty-p val-str)))
-            (let* ((custom-filters (org-ssg--config-get :filters))
-                   (filter-fn      (or (cdr (assoc filter custom-filters))
-                                       (cdr (assoc filter org-ssg-default-filters)))))
-              (if filter-fn
-                  (setq replacement (funcall filter-fn val-str))
-                (org-ssg--log :warn (format "Unknown filter: %s" filter)))))
-          
-          (replace-match replacement t t)))
+               (val-str (if val (format "%s" val) "")))
+          (let ((replacement
+                 (save-match-data
+                   (if (and filter (not (string-empty-p val-str)))
+                       (let* ((custom-filters (org-ssg--config-get :filters))
+                              (filter-fn      (or (cdr (assoc filter custom-filters))
+                                                  (cdr (assoc filter org-ssg-default-filters)))))
+                         (if filter-fn
+                             (funcall filter-fn val-str)
+                           (org-ssg--log :warn (format "Unknown filter: %s" filter))
+                           val-str))
+                     val-str))))
+            (replace-match replacement t t))))
       (cons (buffer-string) changed))))
 
 ;;; ============================================================================
@@ -801,11 +809,9 @@ Variable output comes from e.g. `org-ssg--collect-file'
   "Return the full HTML string for POST rendered with its type template."
   (let* ((theme-dir (org-ssg--config-get :theme))
          (type      (or (plist-get post :type) "page"))
-         (tmpl-name (cond ((org-ssg--resolve-theme-file (concat type "-item.html") theme-dir)
-                           (concat type "-item"))
-                          (t type)))
+         (tmpl-name type)
          (title     (or (plist-get post :title) ""))
-         (template  (org-ssg--load-template type theme-dir))
+         (template  (org-ssg--load-template tmpl-name theme-dir))
          (content   (org-ssg--org-to-html (plist-get post :source)))
          (date      (or (plist-get post :date) ""))
          (tags      (plist-get post :tags))
@@ -861,35 +867,6 @@ Variable output comes from e.g. `org-ssg--collect-file'
 ;;; ============================================================================
 ;;; Index and Pagination
 ;;; ============================================================================
-
-(defun org-ssg--render-post-item (post theme-dir)
-  "Return the HTML string for POST rendered as a list item using THEME-DIR.
-Checks theme-dir for TYPE-item.html, if not available uses post-item."
-(let* ((title      (or (plist-get post :title) "Untitled"))
-         (date       (or (plist-get post :date) ""))
-         (tags       (plist-get post :tags))
-         (url        (org-ssg--post-site-url post))
-         (type       (or (plist-get post :type) "post"))
-         (excerpt    (org-ssg--org-string-to-html (plist-get post :excerpt)))
-         
-         (partial    (concat "partials/" type "-list-item"))
-         (resolved   (org-ssg--resolve-theme-file (concat partial ".html") theme-dir))
-         (tmpl-name  (if resolved partial "partials/post-item"))
-         
-         (base-vars  (list :title title :url url :date date
-                           :tags (if tags (string-join tags ", ") "")
-                           :excerpt excerpt))
-         (all-vars   (append base-vars
-                             (cl-loop for (k v) on post by #'cddr
-                                      unless (memq k '(:tags :date :excerpt :css :js :assets))
-                                      nconc (list k (if v (if (stringp v) v (format "%s" v)) ""))))))
-    
-    (car (org-ssg--render-template (org-ssg--load-template tmpl-name theme-dir) all-vars theme-dir))))
-
-(defun org-ssg--render-post-list (posts theme-dir)
-  "Return an HTML string of concatenated list items for POSTS using THEME-DIR."
-  (mapconcat (lambda (p) (org-ssg--render-post-item p theme-dir))
-             posts "\n"))
 
 (defun org-ssg--paginate (posts per-page)
   "Return POSTS split into a list of pages of PER-PAGE items each."
@@ -1053,15 +1030,6 @@ Uses `org-ssg--global-tags-table` to inject post counts into the title attribute
               "</div>")
     ""))
 
-(defun org-ssg--render-tag-item (tag count theme-dir)
-  "Return HTML for TAG with post COUNT using tag-item partial from THEME-DIR."
-  (car (org-ssg--render-template
-        (org-ssg--load-template "partials/tag-item" theme-dir)
-        (list :name  tag
-              :slug  (org-ssg--tag-to-slug tag)
-              :count (number-to-string count))
-        theme-dir)))
-
 (defun org-ssg--write-tag-page (tag posts output-dir theme-dir)
   "Write a listing page for TAG with its POSTS to OUTPUT-DIR using THEME-DIR."
   (let* ((slug     (org-ssg--tag-to-slug tag))
@@ -1071,8 +1039,7 @@ Uses `org-ssg--global-tags-table` to inject post counts into the title attribute
          (template (org-ssg--load-template "partials/tag-index" theme-dir))
          (inner    (car (org-ssg--render-template template
                                                   (list :title      (concat "Tag: " tag)
-                                                        :posts      (org-ssg--render-post-list
-                                                                     sorted theme-dir)
+                                                        :posts      sorted
                                                         :pagination "")
                                                   theme-dir)))
          (html     (org-ssg--wrap-base inner (concat "Tag: " tag))))
@@ -1086,20 +1053,19 @@ Uses `org-ssg--global-tags-table` to inject post counts into the title attribute
          (output      (expand-file-name "index.html" dir))
          (template    (org-ssg--load-template "tags" theme-dir))
          (sorted-tags (sort (hash-table-keys tags-table) #'string<))
-         (items       (mapconcat
-                       (lambda (tag)
-                         (org-ssg--render-tag-item
-                          tag (length (gethash tag tags-table)) theme-dir))
-                       sorted-tags "\n"))
+         (tag-items   (mapcar (lambda (tag)
+                                (list :name tag
+                                      :slug (org-ssg--tag-to-slug tag)
+                                      :count (length (gethash tag tags-table))))
+                              sorted-tags))
          (inner       (car (org-ssg--render-template template
                                                      (list :title "Tags"
-                                                           :tags  items)
+                                                           :tags  tag-items)
                                                      theme-dir)))
          (html        (org-ssg--wrap-base inner "Tags")))
     (make-directory dir t)
     (write-region html nil output)
     (org-ssg--log :info (format "Rendered tags index: %s" output))))
-
 (defun org-ssg--generate-tags (posts output-dir)
   "Generate all tag pages and the tags index from POSTS to OUTPUT-DIR."
   (condition-case err
