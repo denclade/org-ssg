@@ -935,7 +935,6 @@ Leaves 'index.html' strictly as 'index.html' and 'page-2.html'."
   "Render a POST that acts as an 11ty-style index for a COLLECTION."
   (let* ((col-name (plist-get post :collection))
          (per-page (or (plist-get post :per-page) (org-ssg--config-get :per-page) 10))
-         ;; e.g. #+COLLECTION: blog, videos
          (types    (split-string col-name "[, ]+" t))
          (items    (org-ssg--get-collection types))
          (pages    (org-ssg--paginate items per-page))
@@ -943,11 +942,6 @@ Leaves 'index.html' strictly as 'index.html' and 'page-2.html'."
          (base-out (plist-get post :output))
          (updated  nil))
 
-    (org-ssg--log :info (format "[DEBUG] 11ty-Seite: %s" (file-name-nondirectory (plist-get post :source))))
-    (org-ssg--log :info (format "[DEBUG] -> Search for COLLECTION: '%s'" col-name))
-    (org-ssg--log :info (format "[DEBUG] -> Split search types: %S" types))
-    (org-ssg--log :info (format "[DEBUG] -> Found posts: %d" (length items)))
-    
     (when (null pages)
       (setq pages (list nil))
       (setq total 1))
@@ -955,15 +949,17 @@ Leaves 'index.html' strictly as 'index.html' and 'page-2.html'."
     (cl-loop for page-items in pages
              for i from 1
              do
-             (let* ((page-output (org-ssg--paged-output base-out i))
-                    (page-url    (concat "/" (file-relative-name page-output (org-ssg--config-get :output))))
-                    (page-post   (copy-sequence post)))
+             (let* ((page-output   (org-ssg--paged-output base-out i))
+                    (page-url      (concat "/" (file-relative-name page-output (org-ssg--config-get :output))))
+                    ;; extract e.g. "/videos/" or "/" from page-url
+                    (base-url-path (file-name-directory page-url))
+                    (page-post     (copy-sequence post)))
                
                (setq page-post (plist-put page-post :paginated-items page-items))
                (setq page-post (plist-put page-post :output page-output))
                (setq page-post (plist-put page-post :url page-url))
                (setq page-post (plist-put page-post :pagination
-                                          (org-ssg--pagination-html i total (org-ssg--config-get :theme))))
+                                          (org-ssg--pagination-html i total base-url-path (org-ssg--config-get :theme))))
                
                (when (org-ssg--write-post page-post t)
                  (setq updated t))))
@@ -1005,12 +1001,15 @@ Leaves 'index.html' strictly as 'index.html' and 'page-2.html'."
       (push (nreverse current) pages))
     (nreverse pages)))
 
-(defun org-ssg--pagination-html (current-page total-pages theme-dir)
-  "Return pagination HTML for CURRENT-PAGE of TOTAL-PAGES using THEME-DIR."
+(defun org-ssg--pagination-html (current-page total-pages base-url-path theme-dir)
+  "Return pagination HTML for CURRENT-PAGE of TOTAL-PAGES using THEME-DIR.
+BASE-URL-PATH ensures links are root-relative (e.g., /videos/page-2.html)."
   (let* ((prev-url  (when (> current-page 1)
-                      (if (= current-page 2) "./" (format "page-%d.html" (1- current-page)))))
+                      (if (= current-page 2) 
+                          base-url-path 
+                        (concat base-url-path (format "page-%d.html" (1- current-page))))))
          (next-url  (when (< current-page total-pages)
-                      (format "page-%d.html" (1+ current-page))))
+                      (concat base-url-path (format "page-%d.html" (1+ current-page)))))
          (template  (org-ssg--load-template "partials/pagination" theme-dir))
          (prev-html (if prev-url (format "<a href=\"%s\">&larr; Neuer</a>" prev-url) ""))
          (next-html (if next-url (format "<a href=\"%s\">Älter &rarr;</a>" next-url) "")))
