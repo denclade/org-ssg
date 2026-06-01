@@ -76,6 +76,9 @@
 (defvar org-ssg--build-version 0
   "Timestamp of the last successfull build (used for live reload).")
 
+(defvar org-ssg--collections nil
+  "Hash table grouping all listed posts by their :type.")
+
 (defvar org-ssg--config nil
   "The configuration plist for the currently executing command.
 Bound dynamically; do not set this globally.")
@@ -83,15 +86,12 @@ Bound dynamically; do not set this globally.")
 (defvar org-ssg-config-file ".ssg.el"
   "Name of the project-local configuration file.")
 
-(defvar org-ssg-default-filters
-  '(("date"     . (lambda (val) (format-time-string "%d. %B %Y" (org-ssg--parse-date val))))
-    ("upcase"   . upcase)
-    ("downcase" . downcase))
-  "Alist of default template filters mapping string names to functions.")
-
 (defconst org-ssg--core-keywords
-  '("TITLE" "DATE" "TYPE" "DRAFT" "LISTED" "TAGS" "FILETAGS" "CSS" "JS" "ASSETS" "DESCRIPTION")
+  '("TITLE" "DATE" "TYPE" "DRAFT" "LISTED" "TAGS" "FILETAGS" "CSS" "JS" "ASSETS" "DESCRIPTION" "COLLECTION" "PER_PAGE")
   "Keywords directly supported by org-ssg, achiving some kind of functionality.")
+
+(defvar org-ssg--force-rebuild nil
+  "Flag used by the watcher to force a full rebuild if global files (theme/config) change.")
 
 (defvar org-ssg--global-tags-table nil
   "Hash table of tags with count of associated posts.
@@ -109,6 +109,9 @@ Each entry is a cons cell (LEVEL . MESSAGE) where LEVEL is one of
                            buffer-file-name))
   "Directory containing org-ssg.el.")
 
+(defvar org-ssg--post-cache (make-hash-table :test 'equal)
+  "In-memory cache mapping file paths to a cons cell of (mtime . post-plist).")
+
 (defvar org-ssg--watch-descriptors nil
   "List of active file system watchers.")
 
@@ -117,12 +120,13 @@ Each entry is a cons cell (LEVEL . MESSAGE) where LEVEL is one of
 Debouncing is required as the OS sometimes fires 2-3 events per change."
   )
 
-;; Performance improvements
-(defvar org-ssg--post-cache (make-hash-table :test 'equal)
-  "In-memory cache mapping file paths to a cons cell of (mtime . post-plist).")
+;; public
 
-(defvar org-ssg--force-rebuild nil
-  "Flag used by the watcher to force a full rebuild if global files (theme/config) change.")
+(defvar org-ssg-default-filters
+  '(("date"     . (lambda (val) (format-time-string "%d. %B %Y" (org-ssg--parse-date val))))
+    ("upcase"   . upcase)
+    ("downcase" . downcase))
+  "Alist of default template filters mapping string names to functions.")
 
 ;;; ============================================================================
 ;;; Configuration:
@@ -514,6 +518,9 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
                       (or (org-ssg--extract-keyword ast "TAGS")
                           (org-ssg--extract-keyword ast "FILETAGS"))))
            (slug     (org-ssg--file-to-slug filepath))
+           (collection (org-ssg--extract-keyword ast "COLLECTION"))
+           (per-page   (let ((pp (org-ssg--extract-keyword ast "PER_PAGE")))
+                         (if pp (string-to-number pp) nil)))
            (css         (mapcar #'org-ssg--parse-asset-str (org-ssg--extract-keyword-list ast "CSS")))
            (js          (mapcar #'org-ssg--parse-asset-str (org-ssg--extract-keyword-list ast "JS")))
            (extra-assets (org-ssg--extract-keyword-list ast "ASSETS"))
@@ -532,6 +539,7 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
            
            (custom-props (org-ssg--extract-custom-keywords ast))
            (base-post   (append (list :title title :date date :type type :draft draft :listed listed
+                                      :collection collection :per-page per-page
                                       :tags tags :slug slug :source filepath
                                       :reading-time (when (org-ssg--config-get :reading-time)
                                                       (org-ssg--reading-time-from-ast ast))
@@ -564,6 +572,28 @@ directly in SOURCE-DIR with no type subdirectory are skipped."
         (lambda (a b)
           (string> (or (plist-get a :date) "")
                    (or (plist-get b :date) "")))))
+
+(defun org-ssg--build-collections (posts)
+  "Group POSTS by type into a global hash table. Uses :type-aliases so singular/plural both work."
+  (let ((collections (make-hash-table :test 'equal))
+        (aliases (org-ssg--config-get :type-aliases)))
+    (dolist (post posts)
+      (when (plist-get post :listed)
+        (let* ((raw-type (or (plist-get post :type) "page"))
+               (mapped-type (or (cdr (assoc raw-type aliases)) raw-type)))
+          
+          (puthash mapped-type (cons post (gethash mapped-type collections nil)) collections)
+          
+          (unless (string= raw-type mapped-type)
+            (puthash raw-type (cons post (gethash raw-type collections nil)) collections)))))
+    (setq org-ssg--collections collections)))
+
+(defun org-ssg--get-collection (types)
+  "Return a date-sorted list of posts matching any type in the TYPES list."
+  (let ((combined nil))
+    (dolist (type types)
+      (setq combined (append combined (gethash type org-ssg--collections nil))))
+    (org-ssg--sort-posts-by-date combined)))
 
 ;;; ============================================================================
 ;;; Template Engine & Rendering:
@@ -609,7 +639,6 @@ Returns a cons cell (RESULT . CHANGED-P)."
     (with-temp-buffer
       (insert template)
       (goto-char (point-min))
-      ;; Sucht nach {{include partials/file.html}} (ignoriert Leerzeichen am Ende)
       (while (re-search-forward "{{include[ \t]+\\([^} \t\n]+\\)[ \t]*}}" nil t)
         (setq changed t)
         (let* ((filename (match-string 1))
@@ -835,45 +864,38 @@ Variable output comes from e.g. `org-ssg--collect-file'
 
 (defun org-ssg--render-post (post)
   "Return the full HTML string for POST rendered with its type template."
+"Return the full HTML string for POST rendered with its type template."
   (let* ((theme-dir (org-ssg--config-get :theme))
          (type      (or (plist-get post :type) "page"))
          (tmpl-name type)
-         
          (title     (or (plist-get post :title) ""))
          (template  (org-ssg--load-template tmpl-name theme-dir))
          (content   (org-ssg--org-to-html (plist-get post :source)))
          (date      (or (plist-get post :date) ""))
          (tags      (plist-get post :tags))
          (url       (org-ssg--post-site-url post))
-
          (post-dir  (file-name-directory url))
          
-         (css-html  (org-ssg--build-asset-html (plist-get post :css) post-dir
-                                               "<link rel=\"stylesheet\" href=\"%s\"%s>\n  "
-                                               #'org-ssg--resolve-css-path))
+         (css-html  (org-ssg--build-asset-html (plist-get post :css) post-dir "<link rel=\"stylesheet\" href=\"%s\"%s>\n  " #'org-ssg--resolve-css-path))
+         (js-html   (org-ssg--build-asset-html (plist-get post :js) post-dir "<script src=\"%s\"%s></script>\n  "))
          
-         (js-html   (org-ssg--build-asset-html (plist-get post :js) post-dir
-                                               "<script src=\"%s\"%s></script>\n  "))
-         
-         (base-vars (list :title title
-                          :content content
-                          :url url
+         (base-vars (list :title title :content content :url url
                           :date (if (string-empty-p date) "" (format-time-string "%d. %B %Y" (org-ssg--parse-date date)))
                           :tags (org-ssg--tags-html tags)
                           :reading-time (or (plist-get post :reading-time) "")
-                          :slug (plist-get post :slug)))
+                          :slug (plist-get post :slug)
+                          :posts (plist-get post :paginated-items)
+                          :pagination (or (plist-get post :pagination) "")))
          
          (post-vars (append base-vars
-                            (cl-loop for (k v) on post by #'cddr
-                                     unless (memq k '(:date :tags :reading-time :content :css :js :assets))
-                                     nconc (list k (if v (if (stringp v) v (format "%s" v)) "")))))
-         
+                            (cl-loop for (prop-key prop-value) on post by #'cddr
+                                     unless (memq prop-key '(:date :tags :reading-time :content :css :js :assets :paginated-items :pagination :posts))
+                                     nconc (list prop-key (if prop-value (if (or (stringp prop-value) (listp prop-value)) prop-value (format "%s" prop-value)) "")))))
          (all-vars  (append post-vars org-ssg--config))
          
-         (inner     (car (org-ssg--render-template template all-vars theme-dir))))
-  (org-ssg--wrap-base inner title url
-                      (list :extra-css css-html
-                            :extra-js  js-html))))
+         (inner     (org-ssg--render-recursive template all-vars theme-dir)))
+    
+    (org-ssg--wrap-base inner title url (list :extra-css css-html :extra-js  js-html))))
 
 (defun org-ssg--write-post (post &optional force)
   "Render POST and write it to its output path ONLY if it's newer or FORCE is t."
@@ -895,19 +917,71 @@ Variable output comes from e.g. `org-ssg--collect-file'
           t)
       nil)))
 
+(defun org-ssg--paged-output (base-output page-num)
+  "Convert e.g. 'blog.html' to 'blog/index.html' (page 1) or 'blog/page-2.html' (page 2).
+Leaves 'index.html' strictly as 'index.html' and 'page-2.html'."
+  (let ((dir (file-name-directory base-output))
+        (name (file-name-base base-output)))
+    (if (string= name "index")
+        (expand-file-name (if (= page-num 1) "index.html" (format "page-%d.html" page-num)) dir)
+      (let ((sub-dir (expand-file-name name dir)))
+        (expand-file-name (if (= page-num 1) "index.html" (format "page-%d.html" page-num)) sub-dir)))))
+
+(defun org-ssg--render-paginated-post (post &optional _force)
+  "Render a POST that acts as an 11ty-style index for a COLLECTION."
+  (let* ((col-name (plist-get post :collection))
+         (per-page (or (plist-get post :per-page) (org-ssg--config-get :per-page) 10))
+         ;; e.g. #+COLLECTION: blog, videos
+         (types    (split-string col-name "[, ]+" t))
+         (items    (org-ssg--get-collection types))
+         (pages    (org-ssg--paginate items per-page))
+         (total    (length pages))
+         (base-out (plist-get post :output))
+         (updated  nil))
+
+    (org-ssg--log :info (format "[DEBUG] 11ty-Seite: %s" (file-name-nondirectory (plist-get post :source))))
+    (org-ssg--log :info (format "[DEBUG] -> Search for COLLECTION: '%s'" col-name))
+    (org-ssg--log :info (format "[DEBUG] -> Split search types: %S" types))
+    (org-ssg--log :info (format "[DEBUG] -> Found posts: %d" (length items)))
+    
+    (when (null pages)
+      (setq pages (list nil))
+      (setq total 1))
+
+    (cl-loop for page-items in pages
+             for i from 1
+             do
+             (let* ((page-output (org-ssg--paged-output base-out i))
+                    (page-url    (concat "/" (file-relative-name page-output (org-ssg--config-get :output))))
+                    (page-post   (copy-sequence post)))
+               
+               (setq page-post (plist-put page-post :paginated-items page-items))
+               (setq page-post (plist-put page-post :output page-output))
+               (setq page-post (plist-put page-post :url page-url))
+               (setq page-post (plist-put page-post :pagination
+                                          (org-ssg--pagination-html i total (org-ssg--config-get :theme))))
+               
+               (when (org-ssg--write-post page-post t)
+                 (setq updated t))))
+    updated))
+
 (defun org-ssg--render-all (posts &optional force)
-  "Render all POSTS to their output paths. Returns the number of updated posts."
+  "Render all POSTS. Branches between standard posts and collection indices."
   (let ((count 0))
     (dolist (post posts)
       (condition-case err
-          (when (org-ssg--write-post post force)
-            (cl-incf count))
+          (let ((is-collection (plist-get post :collection)))
+            (if is-collection
+                (when (org-ssg--render-paginated-post post force)
+                  (cl-incf count))
+              (when (org-ssg--write-post post force)
+                (cl-incf count))))
         (error (org-ssg--log :warn (format "Failed to render %s: %s"
                                            (plist-get post :source)
                                            (error-message-string err))))))
     (if (> count 0)
-        (org-ssg--log :info (format "Rendered %d updated post(s)." count))
-      (org-ssg--log :info "No posts needed updating. Skipping HTML generation."))
+        (org-ssg--log :info (format "Rendered %d updated post(s)/pages." count))
+      (org-ssg--log :info "No HTML changes needed."))
     count))
 
 ;;; ============================================================================
@@ -930,110 +1004,15 @@ Variable output comes from e.g. `org-ssg--collect-file'
 (defun org-ssg--pagination-html (current-page total-pages theme-dir)
   "Return pagination HTML for CURRENT-PAGE of TOTAL-PAGES using THEME-DIR."
   (let* ((prev-url  (when (> current-page 1)
-                      (if (= current-page 2)
-                          "/index.html"
-                        (format "/page-%d.html" (1- current-page)))))
+                      (if (= current-page 2) "./" (format "page-%d.html" (1- current-page)))))
          (next-url  (when (< current-page total-pages)
-                      (format "/page-%d.html" (1+ current-page))))
+                      (format "page-%d.html" (1+ current-page))))
          (template  (org-ssg--load-template "partials/pagination" theme-dir))
-         (prev-html (if prev-url
-                        (format "<a href=\"%s\">&larr; Newer</a>" prev-url)
-                      ""))
-         (next-html (if next-url
-                        (format "<a href=\"%s\">Older &rarr;</a>" next-url)
-                      "")))
+         (prev-html (if prev-url (format "<a href=\"%s\">&larr; Neuer</a>" prev-url) ""))
+         (next-html (if next-url (format "<a href=\"%s\">Älter &rarr;</a>" next-url) "")))
     (car (org-ssg--render-template template
-                                   (list :prev prev-html
-                                         :next next-html)
+                                   (list :prev prev-html :next next-html)
                                    theme-dir))))
-
-(defun org-ssg--write-index-page (posts page-num total-pages output-dir &optional plural-type)
-  "Write index page PAGE-NUM of TOTAL-PAGES to OUTPUT-DIR.
-POSTS is the list of posts to render.  If PLURAL-TYPE is provided,
-it writes to a type-specific subdirectory and uses its template or 'posts' as fallback."
-  (let* ((theme-dir  (org-ssg--config-get :theme))
-         ;; retrieve template
-         (tmpl-name  (cond
-                      ((and plural-type (org-ssg--resolve-theme-file (concat plural-type ".html") theme-dir))
-                       plural-type)
-                      ((and plural-type (org-ssg--resolve-theme-file "posts.html" theme-dir))
-                       "posts")
-                      ((and (not plural-type) (org-ssg--resolve-theme-file "index.html" theme-dir))
-                       "index")
-                      (t nil))))
-    
-    (if (not tmpl-name)
-        (when (= page-num 1)
-          (org-ssg--log :warn (format "Skipping '%s' index: No template found (%s.html or posts.html)"
-                                      (or plural-type "root")
-                                      (or plural-type "index"))))
-      
-      (let* ((dir        (if plural-type
-                             (expand-file-name plural-type output-dir)
-                           output-dir))
-             (filename   (if (= page-num 1) "index.html" (format "page-%d.html" page-num)))
-             (output     (expand-file-name filename dir))
-             (page-title (if plural-type
-                             (capitalize plural-type)
-                           (org-ssg--config-get :site-title)))
-             
-             (template   (org-ssg--load-template tmpl-name theme-dir))
-             (inner      (car (org-ssg--render-template template
-                                                        (list :site-title  (org-ssg--config-get :site-title)
-                                                              :description (org-ssg--config-get :description)
-                                                              :posts       posts
-                                                              :pagination  (org-ssg--pagination-html
-                                                                            page-num total-pages theme-dir))
-                                                        theme-dir)))
-             (html       (org-ssg--wrap-base inner page-title)))
-        
-        (make-directory dir t)
-        (write-region html nil output)
-        (org-ssg--log :info (format "Rendered %s: %s"
-                                    (if plural-type (format "%s index" plural-type) "index")
-                                    output))))))
-          
-
-(defun org-ssg--generate-index (all-posts output-dir)
-  "Generate paginated index pages from listed posts in ALL-POSTS to OUTPUT-DIR."
-  (condition-case err
-      (let* ((per-page (or (org-ssg--config-get :per-page) 10))
-             (posts    (org-ssg--sort-posts-by-date
-                        (cl-remove-if-not
-                         (lambda (p) (plist-get p :listed)) all-posts)))
-             (pages    (org-ssg--paginate posts per-page))
-             (total    (length pages)))
-        (if (null posts)
-            (org-ssg--log :warn "No listed posts found.")
-          (cl-loop for page-posts in pages
-                   for i from 1
-                   do (org-ssg--write-index-page
-                       page-posts i total output-dir))))
-    (error (org-ssg--log :warn (format "Failed to generate index: %s"
-                                       (error-message-string err))))))
-
-(defun org-ssg--generate-type-indices (all-posts output-dir)
-  "Generate paginated index pages for each type mapped in :type-aliases.
-Generats it for ALL-POSTS and exports to OUTPUT-DIR"
-  (condition-case err
-      (let ((aliases  (org-ssg--config-get :type-aliases))
-            (per-page (or (org-ssg--config-get :per-page) 10)))
-        (dolist (alias aliases)
-          (let* ((plural-type (car alias))
-                 (type        (cdr alias))
-                 (type-posts  (org-ssg--sort-posts-by-date
-                               (cl-remove-if-not
-                                (lambda (p) (and (plist-get p :listed)
-                                                 (string= (plist-get p :type) type)))
-                                all-posts))))
-            (when type-posts
-              (let* ((pages (org-ssg--paginate type-posts per-page))
-                     (total (length pages)))
-                (cl-loop for page-posts in pages
-                         for i from 1
-                         do (org-ssg--write-index-page page-posts i total output-dir plural-type)))))))
-    (error (org-ssg--log :warn (format "Failed to generate type indices: %s"
-                                       (error-message-string err))))))
 
 ;;; ============================================================================
 ;;; Tags Handling
@@ -1322,15 +1301,18 @@ SITE-TITLE supplies the feed title."
       (condition-case err
           (let* ((posts (org-ssg--collect source output))
                  (org-ssg--global-tags-table (org-ssg--collect-tags posts)))
+
+            (org-ssg--build-collections posts)
+            
             (org-ssg--log :info (format "Collected %d post(s)." (length posts)))
             
             (dolist (static-dir statics)
               (org-ssg--copy-static static-dir (expand-file-name "static" output)))
 
+            (org-ssg--copy-theme-static output theme-dir)
+
             (let ((rendered-count (org-ssg--render-all posts force)))
               (when (or force (> rendered-count 0))
-                (org-ssg--generate-index posts output)
-                (org-ssg--generate-type-indices posts output)
                 (org-ssg--generate-tags posts output)
                 (org-ssg--generate-feeds posts output)
                 (org-ssg--generate-sitemap posts output)))
@@ -1477,10 +1459,8 @@ EVENT is the list coming from `filenotify'."
 (defun org-ssg--watch-add-dir-tree (dir)
   "Add DIR and all subfolders recursively to watchers."
   (when (and dir (file-exists-p dir))
-    ;; Den Hauptordner watchen
     (push (file-notify-add-watch dir '(change attribute-change) #'org-ssg--watch-callback)
           org-ssg--watch-descriptors)
-    ;; Alle Unterordner finden und watchen (Das 't' am Ende schließt Ordner ein)
     (dolist (subdir (directory-files-recursively dir "^[^.]" t))
       (when (file-directory-p subdir)
         (push (file-notify-add-watch subdir '(change attribute-change) #'org-ssg--watch-callback)
@@ -1560,6 +1540,21 @@ Watches src, static and theme folder for changes."
      "#+TITLE: About\n#+LISTED: false\n\nThis is the about page.\n"
      nil (expand-file-name "about.org" pages))
     (message "Done! Initialized org-ssg project at %s" base)))
+
+;;; ============================================================================
+;;; DEBUGGING TOOLS
+;;; ============================================================================
+
+(defun org-ssg-debug-collections ()
+  "Show which collections are found."
+  (interactive)
+  (if (not org-ssg--collections)
+      (message "[DEBUG] org-ssg--collectionsis empty, run org-ssg-build before!")
+    (message "=== DEBUG: collections in cache ===")
+    (maphash (lambda (key posts)
+               (message "[DEBUG] Collection '%s' -> contains %d post(s)" key (length posts)))
+             org-ssg--collections)
+    (message "=================================================")))
 
 (provide 'org-ssg)
 ;;; org-ssg.el ends here
