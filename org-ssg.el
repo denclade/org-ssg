@@ -869,21 +869,31 @@ Variable output comes from e.g. `org-ssg--collect-file'
 (defun org-ssg--render-post (post)
   "Return the full HTML string for POST rendered with its type template."
 "Return the full HTML string for POST rendered with its type template."
-  (let* ((theme-dir (org-ssg--config-get :theme))
-         (type      (or (plist-get post :type) "page"))
-         (tmpl-name type)
+(let* ((theme-dir (org-ssg--config-get :theme))
+         (aliases   (org-ssg--config-get :type-aliases))
+         (raw-type  (or (plist-get post :type) "page"))
+         
+         (tmpl-name (or (cdr (assoc raw-type aliases)) raw-type))
+         
          (title     (or (plist-get post :title) ""))
          (template  (org-ssg--load-template tmpl-name theme-dir))
          (content   (org-ssg--org-to-html (plist-get post :source)))
          (date      (or (plist-get post :date) ""))
          (tags      (plist-get post :tags))
          (url       (org-ssg--post-site-url post))
+
          (post-dir  (file-name-directory url))
          
-         (css-html  (org-ssg--build-asset-html (plist-get post :css) post-dir "<link rel=\"stylesheet\" href=\"%s\"%s>\n  " #'org-ssg--resolve-css-path))
-         (js-html   (org-ssg--build-asset-html (plist-get post :js) post-dir "<script src=\"%s\"%s></script>\n  "))
+         (css-html  (org-ssg--build-asset-html (plist-get post :css) post-dir
+                                               "<link rel=\"stylesheet\" href=\"%s\"%s>\n  "
+                                               #'org-ssg--resolve-css-path))
          
-         (base-vars (list :title title :content content :url url
+         (js-html   (org-ssg--build-asset-html (plist-get post :js) post-dir
+                                               "<script src=\"%s\"%s></script>\n  "))
+         
+         (base-vars (list :title title
+                          :content content
+                          :url url
                           :date (if (string-empty-p date) "" (format-time-string "%d. %B %Y" (org-ssg--parse-date date)))
                           :tags (org-ssg--tags-html tags)
                           :reading-time (or (plist-get post :reading-time) "")
@@ -895,11 +905,13 @@ Variable output comes from e.g. `org-ssg--collect-file'
                             (cl-loop for (prop-key prop-value) on post by #'cddr
                                      unless (memq prop-key '(:date :tags :reading-time :content :css :js :assets :paginated-items :pagination :posts))
                                      nconc (list prop-key (if prop-value (if (or (stringp prop-value) (listp prop-value)) prop-value (format "%s" prop-value)) "")))))
+         
          (all-vars  (append post-vars org-ssg--config))
          
          (inner     (org-ssg--render-recursive template all-vars theme-dir)))
-    
-    (org-ssg--wrap-base inner title url (list :extra-css css-html :extra-js  js-html))))
+    (org-ssg--wrap-base inner title url
+                        (list :extra-css css-html
+                              :extra-js  js-html))))
 
 (defun org-ssg--write-post (post &optional force)
   "Render POST and write it to its output path ONLY if it's newer or FORCE is t."
