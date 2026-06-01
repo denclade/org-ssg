@@ -575,17 +575,21 @@ directly in SOURCE-DIR with no type subdirectory are skipped."
 
 (defun org-ssg--build-collections (posts)
   "Group POSTS by type into a global hash table. Uses :type-aliases so singular/plural both work."
-  (let ((collections (make-hash-table :test 'equal))
+(let ((collections (make-hash-table :test 'equal))
         (aliases (org-ssg--config-get :type-aliases)))
     (dolist (post posts)
       (when (plist-get post :listed)
-        (let* ((raw-type (or (plist-get post :type) "page"))
-               (mapped-type (or (cdr (assoc raw-type aliases)) raw-type)))
+        (let* ((type (or (plist-get post :type) "page"))
+               (keys-to-register (list type)))
           
-          (puthash mapped-type (cons post (gethash mapped-type collections nil)) collections)
+          (dolist (alias aliases)
+            (when (string= type (car alias))
+              (push (cdr alias) keys-to-register))
+            (when (string= type (cdr alias))
+              (push (car alias) keys-to-register)))
           
-          (unless (string= raw-type mapped-type)
-            (puthash raw-type (cons post (gethash raw-type collections nil)) collections)))))
+          (dolist (k (delete-dups keys-to-register))
+            (puthash k (cons post (gethash k collections nil)) collections)))))
     (setq org-ssg--collections collections)))
 
 (defun org-ssg--get-collection (types)
