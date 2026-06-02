@@ -583,6 +583,10 @@ directly in SOURCE-DIR with no type subdirectory are skipped."
 (defun org-ssg--build-collections (posts)
   "Group POSTS by type into a global hash table.
 Uses :type-aliases so singular/plural both work."
+  ;; TODO: Currently this method creates keys for
+  ;; singular and pluarl types. Remove this hack
+  ;; and handle singular/plural somehow better.
+  ;; Do NOT duplicate posts for singular/plural keys
 (let ((collections (make-hash-table :test 'equal))
         (aliases (org-ssg--config-get :type-aliases)))
     (dolist (post posts)
@@ -999,6 +1003,7 @@ e.g. 'blog.html' to 'blog/index.html' (page 1) or
   "Render all POSTS.
 If FORCE is a non-nil Value the post is rendered, even if there is a
 cached version.  Branches between standard posts and collection indices."
+  (message "[DEBUG] %S" (hash-table-keys org-ssg--collections))
   (let ((count 0))
     (dolist (post posts)
       (condition-case err
@@ -1009,6 +1014,10 @@ cached version.  Branches between standard posts and collection indices."
             ;; explicitly creates index files and just goes throug all
             ;; types, checking if an index.org exists, if not use a
             ;; default one.
+            ;; Store collection, check if its a combined one (todos,videos,..)
+            ;; or a single one (todos).or just  go through every folder and generate a
+            ;; index page, if none is available?
+
             (if is-collection
                 (when (org-ssg--render-paginated-post post)
                   (cl-incf count))
