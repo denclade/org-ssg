@@ -1005,7 +1005,7 @@ cached version.  Branches between standard posts and collection indices."
       (condition-case err
           (let ((is-collection (plist-get post :collection)))
             (if is-collection
-                (when (org-ssg--render-paginated-post post force)
+                (when (org-ssg--render-paginated-post post)
                   (cl-incf count))
               (when (org-ssg--write-post post force)
                 (cl-incf count))))
@@ -1020,6 +1020,8 @@ cached version.  Branches between standard posts and collection indices."
 ;;; ============================================================================
 ;;; Index and Pagination
 ;;; ============================================================================
+
+;; TODO: default index page if no specific is defined.
 
 (defun org-ssg--paginate (posts per-page)
   "Return POSTS split into a list of pages of PER-PAGE items each."
@@ -1043,14 +1045,9 @@ BASE-URL-PATH ensures links are root-relative (e.g., /videos/page-2.html)."
                         (concat base-url-path (format "page-%d.html" (1- current-page))))))
          (next-url  (when (< current-page total-pages)
                       (concat base-url-path (format "page-%d.html" (1+ current-page)))))
-         ;; TODO: do we require a more dyname pagination template?
-         ;; Generally I think it should be consistent on a website, so keep it like that.
-         (template  (org-ssg--load-template "partials/pagination" theme-dir))
-         ;; TODO: Allow users to change to language specific. Maybe use a HTML template?
-         (prev-html (if prev-url (format "<a href=\"%s\">&larr; Neuer</a>" prev-url) ""))
-         (next-html (if next-url (format "<a href=\"%s\">Älter &rarr;</a>" next-url) "")))
+         (template  (org-ssg--load-template "partials/pagination" theme-dir)))
     (car (org-ssg--render-template template
-                                   (list :prev prev-html :next next-html)
+                                   (list :prev-url prev-url :next-url next-url)
                                    theme-dir))))
 
 ;;; ============================================================================
