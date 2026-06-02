@@ -1003,6 +1003,12 @@ cached version.  Branches between standard posts and collection indices."
     (dolist (post posts)
       (condition-case err
           (let ((is-collection (plist-get post :collection)))
+            ;; TODO: collection if there is no explicit index.org?
+            ;; Currently collections are handled here as normal posts.
+            ;; maybe skip collections here and generate a method which
+            ;; explicitly creates index files and just goes throug all
+            ;; types, checking if an index.org exists, if not use a
+            ;; default one.
             (if is-collection
                 (when (org-ssg--render-paginated-post post)
                   (cl-incf count))
