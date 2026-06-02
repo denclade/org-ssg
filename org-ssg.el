@@ -404,8 +404,7 @@ WPM is the words-per-minute rate; it defaults to 200."
          (clean   (replace-regexp-in-string "^#\\+[A-Z_]+:.*$" "" text))
          (words   (length (split-string clean "\\W+" t)))
          (minutes (max 0 (round (/ (float words) (or wpm 200))))))
-    ;; TODO: configurable string
-    (format "Lesezeit: %d Min." minutes)))
+    minutes))
 
 (defun org-ssg--file-to-slug (filepath)
   "Return a URL slug derived from FILEPATH."
