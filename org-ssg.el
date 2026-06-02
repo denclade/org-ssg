@@ -344,6 +344,7 @@ e.g. for #+JS: js/app.js defer"
 
 (defun org-ssg--build-asset-html (items post-dir template &optional path-resolver)
   "Generate HTML tags for a list of ITEMS (src . attrs) using TEMPLATE.
+POST-DIR is the base-dir of the items.
 PATH-RESOLVER is an optional function applied to the source path (e.g., for SCSS)."
   (mapconcat (lambda (item)
                (let* ((src (if path-resolver (funcall path-resolver (car item)) (car item)))
@@ -439,6 +440,7 @@ The type is the name of the immediate subdirectory of SOURCE-DIR."
 ;;; Collection
 ;;; ============================================================================
 
+;; Collect assets (static files)
 (defun org-ssg--collect-assets-explicit-from-properties (filepath assets-list)
   "Return absolute paths for all relative files under FILEPATH in ASSETS-LIST.
 ASSETS-LIST contains lists of e.g. CSS, JS or EXTRA assets."
@@ -480,18 +482,22 @@ Paths are resolved relative to SOURCE-FILE and filtered to those that exist."
                                                  (file-name-nondirectory source-file)))
                     nil))))))))
 
-(defun org-ssg--collect-file (filepath source-dir output-dir)
-  "Return a post plist, utilizing an in-memory cache if the file hasn't changed."
+;; Collect content files
+(defun org-ssg--collect-content-file (filepath source-dir output-dir)
+  "Return a plist of a the content file at FILEPATH.
+SOURCE-DIR is required to get the first parent folder to infer the type
+property.  The OUTPUT-DIR is used to generate the file's output path.
+Utilizing an in-memory cache if the file hasn't changed."
   (let* ((attrs  (file-attributes filepath))
          (mtime  (file-attribute-modification-time attrs))
          (cached (gethash filepath org-ssg--post-cache)))
     (if (and cached (equal (car cached) mtime))
         (cdr cached)
-      (let ((post (org-ssg--collect-file-parse filepath source-dir output-dir)))
+      (let ((post (org-ssg--collect-content-file-parse filepath source-dir output-dir)))
         (puthash filepath (cons mtime post) org-ssg--post-cache)
         post))))
 
-(defun org-ssg--collect-file-parse (filepath source-dir output-dir)
+(defun org-ssg--collect-content-file-parse (filepath source-dir output-dir)
   "Return a post plist by parsing the Org file at FILEPATH.
 SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
   (with-temp-buffer
@@ -555,7 +561,7 @@ OUTPUT-DIR is used to compute output paths.  Draft posts and files placed
 directly in SOURCE-DIR with no type subdirectory are skipped."
   (delq nil
         (mapcar (lambda (f)
-                  (let ((post (org-ssg--collect-file f source-dir output-dir)))
+                  (let ((post (org-ssg--collect-content-file f source-dir output-dir)))
                     (cond
                      ((plist-get post :draft)
                       (org-ssg--log :info (format "Skipping draft: %s" f))
@@ -566,6 +572,7 @@ directly in SOURCE-DIR with no type subdirectory are skipped."
                      (t post))))
                 (directory-files-recursively source-dir "\\.org$"))))
 
+;; Helper functions
 (defun org-ssg--sort-posts-by-date (posts)
   "Return POSTS sorted by date, newest first."
   (sort (copy-sequence posts)
@@ -573,8 +580,10 @@ directly in SOURCE-DIR with no type subdirectory are skipped."
           (string> (or (plist-get a :date) "")
                    (or (plist-get b :date) "")))))
 
+;; Get collections (sorted content by type)
 (defun org-ssg--build-collections (posts)
-  "Group POSTS by type into a global hash table. Uses :type-aliases so singular/plural both work."
+  "Group POSTS by type into a global hash table.
+Uses :type-aliases so singular/plural both work."
 (let ((collections (make-hash-table :test 'equal))
         (aliases (org-ssg--config-get :type-aliases)))
     (dolist (post posts)
@@ -657,7 +666,9 @@ Returns a cons cell (RESULT . CHANGED-P)."
       (cons (buffer-string) changed))))
 
 (defun org-ssg--render-template (template vars theme-dir)
-  "Process a complete TEMPLATE string in steps: includes, loops, conditions, vars."
+  "Process a complete TEMPLATE string in: includes, loops, conditions, vars.
+VARS contains the variables which should be used to replace {{key}}.
+Template files are gathered from THEME-DIR."
   (let* ((step1 (org-ssg--process-includes template theme-dir))
          (step2 (org-ssg--process-loops (car step1) vars theme-dir))
          (step3 (org-ssg--process-ifs (car step2) vars theme-dir))
@@ -734,18 +745,20 @@ Returns a Cons-Cell (NEW-TEMPLATE . CHANGED-P)."
       (cons (buffer-string) changed))))
 
 (defun org-ssg--prefix-plist-keys (plist prefix-str)
-  "Stellt PREFIX-STR (z.B. 'item') vor alle Keys in PLIST."
+  "Insert PREFIX-STR (e.g. 'item') before all keys in PLIST."
   (let ((prefixed nil)
         (prefix (concat ":" prefix-str ".")))
     (cl-loop for (k v) on plist by #'cddr
-             do (setq prefixed 
+             do (setq prefixed
                       (plist-put prefixed
                                  (intern (concat prefix (substring (symbol-name k) 1)))
                                  v)))
     prefixed))
 
 (defun org-ssg--process-loops (template vars theme-dir)
-  "Process {{#each list}} or {{#each list as item}}...{{/each}} blocks in TEMPLATE."
+  "Process {{#each list}} or {{#each list as item}}...{{/each}} blocks in TEMPLATE.
+VARS contains the variables which should be used to replace {{key}}.
+The template is looked up in THEME-DIR."
   (org-ssg--replace-in-template
    template
    "{{\\#each[ \t]+\\([a-zA-Z0-9_-]+\\)\\(?:[ \t]+as[ \t]+\\([a-zA-Z0-9_-]+\\)\\)?}}[ \t]*\n?\\(\\(?:.\\|\n\\)*?\\){{/each}}"
@@ -772,7 +785,9 @@ Returns a Cons-Cell (NEW-TEMPLATE . CHANGED-P)."
          "")))))
 
 (defun org-ssg--process-ifs (template vars theme-dir)
-  "Process {{#if var}}...{{else}}...{{/if}} blocks in TEMPLATE."
+  "Process {{#if var}}...{{else}}...{{/if}} blocks in TEMPLATE.
+VARS contains the variables which should be used to replace {{key}}.
+The template is looked up in THEME-DIR."
   (org-ssg--replace-in-template
    template
    "{{\\#if[ \t]+\\([^}]+\\)}}\n?\\(\\(?:.\\|\n\\)*?\\){{/if}}"
@@ -860,7 +875,7 @@ Returns an empty string if ORG-STRING is nil."
 
 (defun org-ssg--post-site-url (post)
   "Return the root-relative URL for POST.
-Variable output comes from e.g. `org-ssg--collect-file'
+Variable output comes from e.g. `org-ssg--collect-content-file'
     (output   (expand-file-name ..."
   (concat "/"
           (file-relative-name (plist-get post :output)
@@ -934,8 +949,12 @@ Variable output comes from e.g. `org-ssg--collect-file'
       nil)))
 
 (defun org-ssg--paged-output (base-output page-num)
-  "Convert e.g. 'blog.html' to 'blog/index.html' (page 1) or 'blog/page-2.html' (page 2).
-Leaves 'index.html' strictly as 'index.html' and 'page-2.html'."
+  "Convert the source filepath BASE-OUTPUT to a paged filename.
+The PAGE-NUM defines the file naming.  Leaves 'index.html' strictly as
+'index.html' and 'page-2.html'.  This allows for the following schemes:
+e.g. 'blog.html' to 'blog/index.html' (page 1) or
+'blog/page-2.html' (page 2).  or 'blog/index.html' to
+'blog/index.html' (page 1) or 'blog/page-2.html' (page 2)."
   (let ((dir (file-name-directory base-output))
         (name (file-name-base base-output)))
     (if (string= name "index")
@@ -943,8 +962,8 @@ Leaves 'index.html' strictly as 'index.html' and 'page-2.html'."
       (let ((sub-dir (expand-file-name name dir)))
         (expand-file-name (if (= page-num 1) "index.html" (format "page-%d.html" page-num)) sub-dir)))))
 
-(defun org-ssg--render-paginated-post (post &optional _force)
-  "Render a POST that acts as an 11ty-style index for a COLLECTION."
+(defun org-ssg--render-paginated-post (post)
+  "Render a POST that acts as an index for a COLLECTION."
   (let* ((col-name (plist-get post :collection))
          (per-page (or (plist-get post :per-page) (org-ssg--config-get :per-page) 10))
          (types    (split-string col-name "[, ]+" t))
@@ -978,7 +997,9 @@ Leaves 'index.html' strictly as 'index.html' and 'page-2.html'."
     updated))
 
 (defun org-ssg--render-all (posts &optional force)
-  "Render all POSTS. Branches between standard posts and collection indices."
+  "Render all POSTS.
+If FORCE is a non-nil Value the post is rendered, even if there is a
+cached version.  Branches between standard posts and collection indices."
   (let ((count 0))
     (dolist (post posts)
       (condition-case err
@@ -1017,12 +1038,15 @@ Leaves 'index.html' strictly as 'index.html' and 'page-2.html'."
   "Return pagination HTML for CURRENT-PAGE of TOTAL-PAGES using THEME-DIR.
 BASE-URL-PATH ensures links are root-relative (e.g., /videos/page-2.html)."
   (let* ((prev-url  (when (> current-page 1)
-                      (if (= current-page 2) 
-                          base-url-path 
+                      (if (= current-page 2)
+                          base-url-path
                         (concat base-url-path (format "page-%d.html" (1- current-page))))))
          (next-url  (when (< current-page total-pages)
                       (concat base-url-path (format "page-%d.html" (1+ current-page)))))
+         ;; TODO: do we require a more dyname pagination template?
+         ;; Generally I think it should be consistent on a website, so keep it like that.
          (template  (org-ssg--load-template "partials/pagination" theme-dir))
+         ;; TODO: Allow users to change to language specific. Maybe use a HTML template?
          (prev-html (if prev-url (format "<a href=\"%s\">&larr; Neuer</a>" prev-url) ""))
          (next-html (if next-url (format "<a href=\"%s\">Älter &rarr;</a>" next-url) "")))
     (car (org-ssg--render-template template
@@ -1301,7 +1325,9 @@ SITE-TITLE supplies the feed title."
 
 ;;;###autoload
 (defun org-ssg-build (&optional force)
-  "Build the site for the project in the current directory."
+  "Build the site for the project in the current directory.
+If FORCE is a non-nil Value the post is rendered, even if there is a
+cached version."
   (interactive)
   (let ((org-ssg--config (org-ssg--load-config)))
     (org-ssg--log-reset)
@@ -1527,7 +1553,7 @@ Watches src, static and theme folder for changes."
 
 ;;;###autoload
 (defun org-ssg-init (base-dir base-url site-title)
-  "Initialize a new org-ssg site at BASE-DIR with BASE-URL & site-title."
+  "Initialize a new org-ssg site at BASE-DIR with BASE-URL & SITE-TITLE."
   (interactive
    (list (read-directory-name "Base directory: ")
          (read-string "Base URL (e.g. https://example.com): ")
