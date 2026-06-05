@@ -9,7 +9,8 @@ Write your content in org-mode, configure everything in a simple local file, and
 
 *Features:*
 - **Zero-config defaults:** Auto-detects paths based on project root.
-- **Native Template Engine:** Built-in support for ={{#each}}= loops, ={{#if}}= conditions, and custom Lisp filters. 100% Emacs-native, zero external dependencies.
+- **Hierarchical Virtual Indices:** Deeply nested folders (e.g., =videos/inf/webdev/=) automatically generate smart, pre-filtered index pages—no manual configuration required!
+- **Advanced Native Template Engine:** Built-in support for nested ={{#each}}= loops with scoping (=as item=), nested ={{#if}}= conditions, dot-notation (=post.title=), and custom Lisp filters. 100% Emacs-native, zero external dependencies.
 - **Live-Reload & Watcher:** Save a file in Emacs, see it instantly in the browser.
 - **Native SCSS Support:** Automatically compiles =.scss= files when sass exists on your system.
 - **Rich Excerpts:** Native support for =#+begin_excerpt= blocks.
@@ -68,7 +69,8 @@ To stop the watcher, run =M-x org-ssg-stop-watch=.
 
 ** Writing Content
 
-The content type is inferred from the directory the file lives in. For example, a file in =content/video/= is treated as type =video=. 
+The content type is automatically inferred from the directory the file lives in. org-ssg supports **multiple types** based on folder depth. 
+For example, a file in =content/videos/inf/webdev/post.org= will automatically be assigned the types: =videos=, =inf=, and =webdev=.
 
 #+begin_src org
 #+TITLE: My Post
@@ -90,15 +92,30 @@ Post content goes here. Full org-mode syntax supported.
 |---------------+----------------------------------------------+-------------------------------|
 | =#+TITLE:=    | Page title                                   | =#+TITLE: My Post=            |
 | =#+DATE:=     | Publication date (yyyy-mm-dd)                | =#+DATE: 2026-05-28=          |
-| =#+TYPE:=     | Force a specific template type               | =#+TYPE: page=                |
+| =#+TYPE:=     | Override the inferred folder type(s)         | =#+TYPE: page, special=       |
+| =#+TEMPLATE:= | Force a specific HTML template               | =#+TEMPLATE: landing-page=    |
+| =#+COMPACT:=  | Custom var often used for list layouts       | =#+COMPACT: t=                |
 | =#+TAGS:=     | Space/comma separated list of tags           | =#+TAGS: emacs lisp=          |
 | =#+EXCERPT:=  | A plain-text summary (fallback for blocks)   | =#+EXCERPT: A short read.=    |
 | =#+CSS:=      | Inject specific CSS into the document <head> | =#+CSS: /static/custom.css=   |
 | =#+JS:=       | Inject specific JS into the document <head>  | =#+JS: /static/script.js=     |
+| =#+COLLECTION:| Generate a manual index with AND-logic       | =#+COLLECTION: videos, inf=   |
 | =#+DRAFT:=    | Set to =t= to completely exclude from build  | =#+DRAFT: t=                  |
 | =#+LISTED:=   | Set to =nil= to hide from index listings     | =#+LISTED: nil=               |
 
 *Note on Custom Keywords:* Any unrecognized keyword (like =#+MY_VAR: value=) is automatically extracted and passed to the template engine. You can render it via ={{my-var}}=.
+
+*** Virtual Indices
+
+org-ssg will automatically generate "virtual" index pages for every subfolder in your =content/= directory, so you don't have to write manual =index.org= files.
+
+If you have a file at =content/videos/inf/post.org=:
+- org-ssg auto-generates =/videos/index.html= (listing ALL videos).
+- org-ssg auto-generates =/videos/inf/index.html= (listing ONLY posts that are both videos AND inf).
+
+Virtual indices are automatically passed the variable =compact= (=t=) and use the =posts.html= template, making it incredibly easy to style them dynamically.
+
+/Want to override a virtual index?/ Just create an =index.org= inside that folder. It will seamlessly replace the virtual one!
 
 *** Custom Links & Buttons
 org-ssg provides custom link types to easily add CSS classes to your inline links:
@@ -127,30 +144,30 @@ org-ssg will compile it and rewrite the HTML link to point to =style.css=.
 
 ** Templates
 
-org-ssg features a powerful, Emacs-native template engine. It supports includes, logic-less loops, conditionals, and Lisp-powered filters.
+org-ssg features a powerful, Emacs-native template engine. It supports includes, scoped loops, deeply nested conditionals, and Lisp-powered filters.
 
 *** 1. Template Resolution
 
-Templates are matched based on the content =type=:
-- **Single Page View:** A post of type =video= will look for =video.html= (or =page.html= as fallback).
-- **Type Index Pages:** If you defined =("videos" . "video")= in =:type-aliases=, org-ssg will automatically generate =/videos/index.html= using the =videos.html= template (falling back to =index.html=).
+Templates are matched based on the content =type= (or the =#+TEMPLATE:= override):
+1. Explicit =#+TEMPLATE: custom= -> searches for =custom.html=
+2. Alias matching: If type is =videos= and =("videos" . "video")= is in =:type-aliases= -> searches for =video.html=
+3. Fallback: Searches for =page.html=
 
-*** 2. Variables & Filters
+*** 2. Variables, Filters & Dot-Notation
 
 Access standard or custom frontmatter variables using double brackets. You can pipe variables through filters using the =|= symbol.
 
 #+begin_src html
 <h1>{{title}}</h1>
 <time>{{date | date}}</time>
-<p>{{excerpt | truncate}}</p>
-<span>{{author | upcase}}</span>
+<p>{{post.excerpt | truncate}}</p>
 #+end_src
 
 Built-in filters are =date=, =upcase=, and =downcase=. Add your own in =.ssg.el=.
 
-*** 3. Conditionals (If/Else)
+*** 3. Deeply Nested Conditionals (If/Else)
 
-You can conditionally render blocks based on variable existence or truthiness:
+You can conditionally render blocks based on variable existence or truthiness, and safely nest them:
 
 #+begin_src html
 <article>
@@ -158,29 +175,38 @@ You can conditionally render blocks based on variable existence or truthiness:
     <span class="warning">Draft</span>
   {{else}}
     <span class="success">Published</span>
-  {{/if}}
-
-  {{#if custom_video_url}}
-    <iframe src="{{custom_video_url}}"></iframe>
+    {{#if custom_video_url}}
+      <iframe src="{{custom_video_url}}"></iframe>
+    {{/if}}
   {{/if}}
 </article>
 #+end_src
 
-*** 4. Loops (Lists)
+*** 4. Scoped Loops (Lists)
 
-Iterating over collections (like =posts= on the index page) is done with ={{#each}}=. You have full control over the HTML structure without needing extra files.
+Iterating over collections is done with ={{#each}}=. You can use the =as= keyword to scope your variables (e.g., =post.title=), which prevents variable collisions and keeps your templates perfectly clean!
 
 #+begin_src html
-<div class="post-grid">
-  {{#each posts}}
-    <article class="card">
-      <h2><a href="{{url}}">{{title}}</a></h2>
-      <div class="meta">{{date | date}}</div>
-      <p>{{excerpt}}</p>
-      {{tags}}
-    </article>
+<ul class="post-list">
+  {{#each posts as post}}
+    <li>
+      {{#if compact}}
+        <div class="metadata-row">
+          <time>{{post.date | date}}</time>
+          {{#if post.reading-time}}
+            <span>{{post.reading-time}} Min.</span>
+          {{/if}}
+        </div>
+        <a href="{{post.url}}">{{post.title}}</a>
+      {{else}}
+        <article class="post-item">
+          <h2><a href="{{post.url}}">{{post.title}}</a></h2>
+          <div class="post-abstract">{{post.excerpt}}</div>
+        </article>
+      {{/if}}
+    </li>
   {{/each}}
-</div>
+</ul>
 
 {{pagination}}
 #+end_src
@@ -225,6 +251,7 @@ These are the built-in variables available in your templates. Any custom frontma
 | ={{tags}}=       | Rendered HTML tag links                          |
 | ={{extra-css}}=  | CSS links injected from =#+CSS:=                 |
 | ={{extra-js}}=   | JS tags injected from =#+JS:=                    |
+| ={{compact}}=    | Boolean =t= (auto-passed to virtual indices)     |
 
 ** Commands
 
@@ -235,7 +262,7 @@ These are the built-in variables available in your templates. Any custom frontma
 | =org-ssg-stop-watch=    | Stop the background watcher                      |
 | =org-ssg-serve=         | Serve site locally and open default browser      |
 | =org-ssg-new=           | Create a new post interactively                  |
-| =org-ssg-build=         | Build the site manually (preserves existing)     |
+| =org-ssg-build=         | Build the site manually                          |
 | =org-ssg-clean=         | Delete the output directory                      |
 | =org-ssg-publish=       | Clean, stop watcher, and build for production    |
 
@@ -244,9 +271,11 @@ RSS and Atom feeds are automatically generated at =/rss.xml= and =/atom.xml= fro
 
 ** Whats going on?
 1. You start with =org-ssg-build=
-2. It searches for all .org files, recursivly from root
-3. It collects the root files and reads out alle properties
-4. It copies required / referenced static assets
+2. It searches for all .org files, recursively from root
+3. It derives types based on folder depth (e.g. =videos/inf=)
+4. It dynamically generates virtual paginated indices for folders missing an =index.org=
+5. It renders the site using the native, depth-aware template engine
+6. It copies required / referenced static assets & compiles SCSS
 
 ** License
 org-ssg is free software, released under the GNU General Public License version 3 or later. See the =LICENSE= file for details. Based on org-grimoire by Strahinja Piperac.
