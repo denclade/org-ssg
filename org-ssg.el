@@ -367,6 +367,11 @@ PATH-RESOLVER is an optional function applied to the source path (e.g., for SCSS
                 (setq custom (plist-put custom sym val))))))))
     custom))
 
+(defun org-ssg--get-sub-directories (source-dir)
+  "Return a list of all subdirectories inside SOURCE-DIR recursively."
+  (seq-filter #'file-directory-p
+              (directory-files-recursively source-dir "" t)))
+
 ;;; ============================================================================
 ;;; Org Parsing
 ;;; ============================================================================
@@ -428,12 +433,15 @@ Treat \"t\", \"true\", and \"yes\" as t; anything else as nil."
       nil)))
 
 (defun org-ssg--infer-type (filepath source-dir)
-  "Return the post type inferred from FILEPATH relative to SOURCE-DIR.
-The type is the name of the immediate subdirectory of SOURCE-DIR."
-  (let* ((relative (file-relative-name filepath source-dir))
-         (parts    (split-string relative "/")))
-    (when (> (length parts) 1)
-      (car parts))))
+  "Return the post types inferred from FILEPATH relative to SOURCE-DIR.
+Types are the names of the immediate subdirectories of SOURCE-DIR.
+E.g. videos/inf/webdev/xx.org -> ('videos' 'inf' 'webdev')."
+  
+(let* ((relative (file-relative-name filepath source-dir))
+         (dir (file-name-directory relative)))
+    (if dir
+        (split-string (directory-file-name dir) "/" t)
+      nil)))
 
 ;;; ============================================================================
 ;;; Collection
@@ -508,7 +516,9 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
            ;; Type
            (file-type (org-ssg--extract-keyword ast "TYPE"))
            (inferred  (org-ssg--infer-type filepath source-dir))
-           (type      (or (when file-type (downcase file-type)) inferred "page"))
+           (type      (if file-type
+                          (split-string (downcase file-type) "[, ]+" t)
+                        (or inferred '("page"))))
 
            (description (org-ssg--extract-keyword ast "DESCRIPTION"))
            (excerpt-raw (or (org-ssg--get-excerpt-org ast) description))
@@ -554,22 +564,28 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
       
       (if hook (funcall hook base-post) base-post))))
 
-(defun org-ssg--collect (source-dir output-dir)
-  "Return a list of post plists by scanning SOURCE-DIR for .org files recursively.
+(defun org-ssg--collect (source-input output-dir)
+  "Return a list of post plists by scanning SOURCE-INPUTs for .org files recursively.
 OUTPUT-DIR is used to compute output paths.  Draft posts and files placed
 directly in SOURCE-DIR with no type subdirectory are skipped."
-  (delq nil
-        (mapcar (lambda (f)
-                  (let ((post (org-ssg--collect-content-file f source-dir output-dir)))
-                    (cond
-                     ((plist-get post :draft)
-                      (org-ssg--log :info (format "Skipping draft: %s" f))
-                      nil)
-                     ((null (plist-get post :type))
-                      (org-ssg--log :warn (format "No type directory, skipping: %s" f))
-                      nil)
-                     (t post))))
-                (directory-files-recursively source-dir "\\.org$"))))
+  (let ((sources (if (listp source-input) source-input (list source-input)))
+        (collected nil))
+    (dolist (src sources)
+      (setq collected
+            (append collected
+                    (delq nil
+                          (mapcar (lambda (f)
+                                    (let ((post (org-ssg--collect-content-file f src output-dir)))
+                                      (cond
+                                       ((plist-get post :draft)
+                                        (org-ssg--log :info (format "Skipping draft: %s" f))
+                                        nil)
+                                       ((null (plist-get post :type))
+                                        (org-ssg--log :warn (format "No type directory, skipping: %s" f))
+                                        nil)
+                                       (t post))))
+                                  (directory-files-recursively src "\\.org$"))))))
+    collected))
 
 ;; Helper functions
 (defun org-ssg--sort-posts-by-date (posts)
@@ -587,18 +603,21 @@ Uses :type-aliases so singular/plural both work."
   ;; singular and pluarl types. Remove this hack
   ;; and handle singular/plural somehow better.
   ;; Do NOT duplicate posts for singular/plural keys
-(let ((collections (make-hash-table :test 'equal))
+  (let ((collections (make-hash-table :test 'equal))
         (aliases (org-ssg--config-get :type-aliases)))
     (dolist (post posts)
       (when (plist-get post :listed)
-        (let* ((type (or (plist-get post :type) "page"))
-               (keys-to-register (list type)))
+        (let* ((raw-types (plist-get post :type))
+               (types (if (listp raw-types) raw-types (list raw-types)))
+               (keys-to-register (copy-sequence types)))
           
+          ;; Alias logic
           (dolist (alias aliases)
-            (when (string= type (car alias))
-              (push (cdr alias) keys-to-register))
-            (when (string= type (cdr alias))
-              (push (car alias) keys-to-register)))
+            (dolist (type types)
+              (when (string= type (car alias))
+                (push (cdr alias) keys-to-register))
+              (when (string= type (cdr alias))
+                (push (car alias) keys-to-register))))
           
           (dolist (k (delete-dups keys-to-register))
             (puthash k (cons post (gethash k collections nil)) collections)))))
@@ -606,10 +625,13 @@ Uses :type-aliases so singular/plural both work."
 
 (defun org-ssg--get-collection (types)
   "Return a date-sorted list of posts matching any type in the TYPES list."
-  (let ((combined nil))
-    (dolist (type types)
-      (setq combined (append combined (gethash type org-ssg--collections nil))))
-    (org-ssg--sort-posts-by-date combined)))
+  (if (null types)
+      nil
+    (let ((result (gethash (car types) org-ssg--collections nil)))
+      (dolist (type (cdr types))
+        (let ((next-group (gethash type org-ssg--collections nil)))
+          (setq result (cl-intersection result next-group :test #'equal))))
+      (org-ssg--sort-posts-by-date result))))
 
 ;;; ============================================================================
 ;;; Template Engine & Rendering:
@@ -886,16 +908,17 @@ Variable output comes from e.g. `org-ssg--collect-content-file'
 
 (defun org-ssg--render-post (post)
   "Return the full HTML string for POST rendered with its type template."
-"Return the full HTML string for POST rendered with its type template."
-(let* ((theme-dir (org-ssg--config-get :theme))
+  (let* ((theme-dir (org-ssg--config-get :theme))
          (aliases   (org-ssg--config-get :type-aliases))
-         (raw-type  (or (plist-get post :type) "page"))
-         
+         (raw-types (plist-get post :type))
+         (raw-type  (if (listp raw-types) (car raw-types) (or raw-types "page")))
          (tmpl-name (or (cdr (assoc raw-type aliases)) raw-type))
          
          (title     (or (plist-get post :title) ""))
          (template  (org-ssg--load-template tmpl-name theme-dir))
-         (content   (org-ssg--org-to-html (plist-get post :source)))
+         (content   (if (plist-get post :source)
+                        (org-ssg--org-to-html (plist-get post :source))
+                      (or (plist-get post :content) "")))
          (date      (or (plist-get post :date) ""))
          (tags      (plist-get post :tags))
          (url       (org-ssg--post-site-url post))
@@ -935,17 +958,16 @@ Variable output comes from e.g. `org-ssg--collect-content-file'
   "Render POST and write it to its output path ONLY if it's newer or FORCE is t."
   (let* ((source (plist-get post :source))
          (output (plist-get post :output))
-         (source-time (file-attribute-modification-time (file-attributes source)))
-         (output-time (if (file-exists-p output)
-                          (file-attribute-modification-time (file-attributes output))
-                        (encode-time 0 0 0 1 1 1970)))) ; Fallback n/a file
+         (needs-update (or force
+                           (not (file-exists-p output))
+                           (and source (file-newer-than-file-p source output)))))
     
-    (if (or force (time-less-p output-time source-time))
+    (if needs-update
         (let* ((html   (org-ssg--render-post post))
                (assets (plist-get post :assets)))
           (make-directory (file-name-directory output) t)
           (write-region html nil output)
-          (when assets
+          (when (and source assets)
             (org-ssg--copy-assets assets source output))
           (org-ssg--log :info (format "Rendered: %s" output))
           t)
@@ -969,8 +991,11 @@ e.g. 'blog.html' to 'blog/index.html' (page 1) or
   "Render a POST that acts as an index for a COLLECTION."
   (let* ((col-name (plist-get post :collection))
          (per-page (or (plist-get post :per-page) (org-ssg--config-get :per-page) 10))
-         (types    (split-string col-name "[, ]+" t))
-         (items    (org-ssg--get-collection types))
+         (types    (when (stringp col-name) (split-string col-name "[, ]+" t)))
+         (pre-filled (plist-get post :paginated-items))
+         (items      (or pre-filled
+                         (when types
+                           (org-ssg--get-collection types))))
          (pages    (org-ssg--paginate items per-page))
          (total    (length pages))
          (base-out (plist-get post :output))
@@ -985,7 +1010,6 @@ e.g. 'blog.html' to 'blog/index.html' (page 1) or
              do
              (let* ((page-output   (org-ssg--paged-output base-out i))
                     (page-url      (concat "/" (file-relative-name page-output (org-ssg--config-get :output))))
-                    ;; extract e.g. "/videos/" or "/" from page-url
                     (base-url-path (file-name-directory page-url))
                     (page-post     (copy-sequence post)))
                
@@ -1006,8 +1030,14 @@ cached version.  Branches between standard posts and collection indices."
   (message "[DEBUG] %S" (hash-table-keys org-ssg--collections))
   (let ((count 0))
     (dolist (post posts)
-      (condition-case err
-          (let ((is-collection (plist-get post :collection)))
+      (condition-case-unless-debug err
+          (let ((is-collection (or (plist-get post :collection)
+                                   (plist-get post :paginated-items))))
+            (if is-collection
+                (when (org-ssg--render-paginated-post post)
+                  (cl-incf count))
+              (when (org-ssg--write-post post force)
+                (cl-incf count))))
             ;; TODO: collection if there is no explicit index.org?
             ;; Currently collections are handled here as normal posts.
             ;; maybe skip collections here and generate a method which
@@ -1017,12 +1047,6 @@ cached version.  Branches between standard posts and collection indices."
             ;; Store collection, check if its a combined one (todos,videos,..)
             ;; or a single one (todos).or just  go through every folder and generate a
             ;; index page, if none is available?
-
-            (if is-collection
-                (when (org-ssg--render-paginated-post post)
-                  (cl-incf count))
-              (when (org-ssg--write-post post force)
-                (cl-incf count))))
         (error (org-ssg--log :warn (format "Failed to render %s: %s"
                                            (plist-get post :source)
                                            (error-message-string err))))))
@@ -1063,6 +1087,40 @@ BASE-URL-PATH ensures links are root-relative (e.g., /videos/page-2.html)."
     (car (org-ssg--render-template template
                                    (list :prev-url prev-url :next-url next-url)
                                    theme-dir))))
+
+(defun org-ssg--generate-virtual-indices (source-dir output-dir posts)
+  "Generate virtual HTML index pages for subdirectories without an index.org.
+Posts are filtered using an AND-logic on path segments."
+  (let ((subdirs (org-ssg--get-sub-directories source-dir))
+        (virtual-indices nil))
+    (cl-loop for subdir in subdirs
+             do
+             (let* ((relative (file-relative-name subdir source-dir))
+                    (path-segments (split-string relative "/" t))
+                    (file-path (file-name-concat subdir "index.org"))
+                    (out-dir (expand-file-name relative output-dir))
+                    (out-file (expand-file-name "index.html" out-dir)))
+               
+               (unless (file-exists-p file-path)
+                 (let ((filtered-posts
+                        (org-ssg--sort-posts-by-date
+                         (cl-remove-if-not
+                          (lambda (p)
+                            (let ((p-types (plist-get p :type)))
+                              (cl-every (lambda (req) (member req p-types)) path-segments)))
+                          posts))))
+                   
+                   (when filtered-posts
+                     (push (list :title (capitalize (car (last path-segments)))
+                                 :type "index"
+                                 :output out-file
+                                 :url (concat "/" relative "/")
+                                 :source nil
+                                 :content ""
+                                 :paginated-items filtered-posts)
+                           virtual-indices)
+                     (org-ssg--log :info (format "Created virtual index for /%s" relative)))))))
+    virtual-indices))
 
 ;;; ============================================================================
 ;;; Tags Handling
@@ -1156,11 +1214,11 @@ Uses `org-ssg--global-tags-table` to inject post counts into the title attribute
     (org-ssg--log :info (format "Rendered tags index: %s" output))))
 (defun org-ssg--generate-tags (posts output-dir)
   "Generate all tag pages and the tags index from POSTS to OUTPUT-DIR."
-  (condition-case err
+  (condition-case-unless-debug err
       (let ((tags      (or org-ssg--global-tags-table (org-ssg--collect-tags posts)))
             (theme-dir (org-ssg--config-get :theme)))
         (maphash (lambda (tag tag-posts)
-                   (condition-case tag-err
+                   (condition-case-unless-debug tag-err
                        (org-ssg--write-tag-page
                         tag tag-posts output-dir theme-dir)
                      (error (org-ssg--log
@@ -1288,7 +1346,7 @@ SITE-TITLE supplies the feed title."
 
 (defun org-ssg--generate-feeds (posts output-dir)
   "Write rss.xml and atom.xml to OUTPUT-DIR generated from POSTS."
-  (condition-case err
+  (condition-case-unless-debug err
       (let* ((base-url    (org-ssg--config-get :base-url))
              (site-title  (org-ssg--config-get :site-title))
              (description (org-ssg--config-get :description))
@@ -1308,7 +1366,7 @@ SITE-TITLE supplies the feed title."
 
 (defun org-ssg--generate-sitemap (posts output-dir)
   "Write sitemap.xml to OUTPUT-DIR generated from POSTS."
-  (condition-case err
+  (condition-case-unless-debug err
       (let* ((base-url (org-ssg--config-get :base-url))
              (output   (expand-file-name "sitemap.xml" output-dir))
              (urls     (mapconcat
@@ -1350,13 +1408,16 @@ cached version."
       (org-ssg--log :info "Build started")
       (org-ssg--log :info (format "Source: %s" source))
       (org-ssg--log :info (format "Output: %s" output))
-      (condition-case err
-          (let* ((posts (org-ssg--collect source output))
-                 (org-ssg--global-tags-table (org-ssg--collect-tags posts)))
+      (condition-case-unless-debug err
+(let* ((posts (org-ssg--collect source output))
+                   (org-ssg--global-tags-table (org-ssg--collect-tags posts)))
 
-            (org-ssg--build-collections posts)
-            
-            (org-ssg--log :info (format "Collected %d post(s)." (length posts)))
+              (org-ssg--build-collections posts)
+              
+              (let ((virtual-indices (org-ssg--generate-virtual-indices source output posts)))
+                (setq posts (append posts virtual-indices)))
+              
+              (org-ssg--log :info (format "Collected %d post(s) (including virtual indices)." (length posts)))
             
             (dolist (static-dir statics)
               (org-ssg--copy-static static-dir (expand-file-name "static" output)))
