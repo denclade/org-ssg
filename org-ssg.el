@@ -784,51 +784,87 @@ Returns a Cons-Cell (NEW-TEMPLATE . CHANGED-P)."
   "Process {{#each list}} or {{#each list as item}}...{{/each}} blocks in TEMPLATE.
 VARS contains the variables which should be used to replace {{key}}.
 The template is looked up in THEME-DIR."
-  (org-ssg--replace-in-template
-   template
-   "{{\\#each[ \t]+\\([a-zA-Z0-9_-]+\\)\\(?:[ \t]+as[ \t]+\\([a-zA-Z0-9_-]+\\)\\)?}}[ \t]*\n?\\(\\(?:.\\|\n\\)*?\\){{/each}}"
-   (lambda ()
-     (let* ((list-key   (intern (concat ":" (match-string 1))))
-            (as-var     (match-string 2))
-            (inner-tmpl (match-string 3))
-            (items      (plist-get vars list-key)))
-       
-       (if (listp items)
-           (mapconcat
-            (lambda (item)
-              (let* (
-                     (base-vars (if (plist-get item :source)
-                                    (org-ssg--post-to-vars item)
-                                  item))
-                     (item-vars (if as-var
-                                    (org-ssg--prefix-plist-keys base-vars as-var)
-                                  base-vars))
-                     (combined-vars (append item-vars vars)))
-
-                (car (org-ssg--render-template inner-tmpl combined-vars theme-dir))))
-            items "")
-         "")))))
+  (let ((changed nil))
+    (with-temp-buffer
+      (insert template)
+      (goto-char (point-min))
+      (while (re-search-forward "{{\\s-*#each\\s-+\\([a-zA-Z0-9_.-]+\\)\\(?:\\s-+as\\s-+\\([a-zA-Z0-9_-]+\\)\\)?\\s-*}}\\(?:\\r?\n\\)?" nil t)
+        (let ((start (match-beginning 0))
+              (key (intern (concat ":" (match-string 1))))
+              (as-var (match-string 2))
+              (content-start (point))
+              (depth 1))
+          
+          ;; Count block depth
+          (while (and (> depth 0) (re-search-forward "{{\\s-*\\(#each\\|/each\\)[^}]*}}" nil t))
+            (if (string= (match-string 1) "#each")
+                (cl-incf depth)
+              (cl-decf depth)))
+          
+          (if (= depth 0)
+              (let* ((items (plist-get vars key))
+                     (inner-tmpl (buffer-substring content-start (match-beginning 0)))
+                     (replacement
+                      (if (listp items)
+                          (mapconcat
+                           (lambda (item)
+                             (let* ((base (if (plist-get item :source) (org-ssg--post-to-vars item) item))
+                                    (item-vars (if as-var (org-ssg--prefix-plist-keys base as-var) base)))
+                               (car (org-ssg--render-template inner-tmpl (append item-vars vars) theme-dir))))
+                           items "")
+                        "")))
+                
+                (setq changed t)
+                (delete-region start (point))
+                (goto-char start)
+                (insert replacement)
+                (goto-char start))
+            
+            ;; Fallback: No {{/each}} found
+            (goto-char content-start))))
+      (cons (buffer-string) changed))))
 
 (defun org-ssg--process-ifs (template vars theme-dir)
   "Process {{#if var}}...{{else}}...{{/if}} blocks in TEMPLATE.
 VARS contains the variables which should be used to replace {{key}}.
 The template is looked up in THEME-DIR."
-  (org-ssg--replace-in-template
-   template
-   "{{\\#if[ \t]+\\([^}]+\\)}}\n?\\(\\(?:.\\|\n\\)*?\\){{/if}}"
-   (lambda ()
-     (let* ((var-sym    (intern (concat ":" (match-string 1))))
-            (full-block (match-string 2))
-            (val        (plist-get vars var-sym))
-            (truthy     (and val
-                             (not (equal val ""))
-                             (not (equal (downcase (format "%s" val)) "false")))))
-       (let ((if-block full-block)
-             (else-block ""))
-         (when (string-match "\\(\\(?:.\\|\n\\)*?\\){{else}}\n?\\(\\(?:.\\|\n\\)*\\)" full-block)
-           (setq if-block   (match-string 1 full-block))
-           (setq else-block (match-string 2 full-block)))
-         (car (org-ssg--render-template (if truthy if-block else-block) vars theme-dir)))))))
+  (let ((changed nil))
+    (with-temp-buffer
+      (insert template)
+      (goto-char (point-min))
+      (while (re-search-forward "{{\\s-*#if\\s-+\\([^} \t\n]+\\)\\s-*}}\\(?:\\r?\n\\)?" nil t)
+        (let ((start (match-beginning 0))
+              (val (plist-get vars (intern (concat ":" (match-string 1)))))
+              (content-start (point))
+              (depth 1)
+              else-pos)
+          
+          ;; Count depth, store {{else}} on depth 1
+          (while (and (> depth 0) (re-search-forward "{{\\s-*\\(#if\\|/if\\|else\\)[^}]*}}" nil t))
+            (let ((tag (match-string 1)))
+              (cond ((string= tag "#if") (cl-incf depth))
+                    ((string= tag "/if") (cl-decf depth))
+                    ((and (string= tag "else") (= depth 1))
+                     (setq else-pos (cons (match-beginning 0)
+                                          (if (eq (char-after) ?\n) (1+ (point)) (point))))))))
+          
+          (if (= depth 0)
+              (let* ((end (match-beginning 0))
+                     (truthy (and val (not (equal val "")) (not (equal (downcase (format "%s" val)) "false"))))
+                     (replacement
+                      (if truthy
+                          (buffer-substring content-start (if else-pos (car else-pos) end))
+                        (if else-pos (buffer-substring (cdr else-pos) end) ""))))
+                
+                (setq changed t)
+                (delete-region start (point))
+                (goto-char start)
+                (insert replacement)
+                (goto-char start))
+            
+            ;; Fallback: No {{/if}} found
+            (goto-char content-start))))
+      (cons (buffer-string) changed))))
 
 (defun org-ssg--process-vars (template vars)
   "Replace {{var}} or {{var | filter}} from VARS in TEMPLATE."
@@ -912,7 +948,7 @@ Variable output comes from e.g. `org-ssg--collect-content-file'
          (aliases   (org-ssg--config-get :type-aliases))
          (raw-types (plist-get post :type))
          (raw-type  (if (listp raw-types) (car raw-types) (or raw-types "page")))
-         (tmpl-name (or (cdr (assoc raw-type aliases)) raw-type))
+         (tmpl-name (or (plist-get post :template) (cdr (assoc raw-type aliases)) raw-type))
          
          (title     (or (plist-get post :title) ""))
          (template  (org-ssg--load-template tmpl-name theme-dir))
@@ -1030,7 +1066,7 @@ cached version.  Branches between standard posts and collection indices."
   (message "[DEBUG] %S" (hash-table-keys org-ssg--collections))
   (let ((count 0))
     (dolist (post posts)
-      (condition-case-unless-debug err
+      (condition-case err
           (let ((is-collection (or (plist-get post :collection)
                                    (plist-get post :paginated-items))))
             (if is-collection
@@ -1089,7 +1125,7 @@ BASE-URL-PATH ensures links are root-relative (e.g., /videos/page-2.html)."
                                    theme-dir))))
 
 (defun org-ssg--generate-virtual-indices (source-dir output-dir posts)
-  "Generate virtual HTML index pages for subdirectories without an index.org.
+  "Generate virtual HTML index pages for subdirectories in SOURCE-DIR without an index.org.
 Posts are filtered using an AND-logic on path segments."
   (let ((subdirs (org-ssg--get-sub-directories source-dir))
         (virtual-indices nil))
@@ -1112,12 +1148,14 @@ Posts are filtered using an AND-logic on path segments."
                    
                    (when filtered-posts
                      (push (list :title (capitalize (car (last path-segments)))
-                                 :type "index"
+                                 :type "virtualindex"
+                                 :template "posts"
                                  :output out-file
                                  :url (concat "/" relative "/")
                                  :source nil
                                  :content ""
-                                 :paginated-items filtered-posts)
+                                 :paginated-items filtered-posts
+                                 :compact t)
                            virtual-indices)
                      (org-ssg--log :info (format "Created virtual index for /%s" relative)))))))
     virtual-indices))
@@ -1214,11 +1252,11 @@ Uses `org-ssg--global-tags-table` to inject post counts into the title attribute
     (org-ssg--log :info (format "Rendered tags index: %s" output))))
 (defun org-ssg--generate-tags (posts output-dir)
   "Generate all tag pages and the tags index from POSTS to OUTPUT-DIR."
-  (condition-case-unless-debug err
+  (condition-case err
       (let ((tags      (or org-ssg--global-tags-table (org-ssg--collect-tags posts)))
             (theme-dir (org-ssg--config-get :theme)))
         (maphash (lambda (tag tag-posts)
-                   (condition-case-unless-debug tag-err
+                   (condition-case tag-err
                        (org-ssg--write-tag-page
                         tag tag-posts output-dir theme-dir)
                      (error (org-ssg--log
@@ -1346,7 +1384,7 @@ SITE-TITLE supplies the feed title."
 
 (defun org-ssg--generate-feeds (posts output-dir)
   "Write rss.xml and atom.xml to OUTPUT-DIR generated from POSTS."
-  (condition-case-unless-debug err
+  (condition-case err
       (let* ((base-url    (org-ssg--config-get :base-url))
              (site-title  (org-ssg--config-get :site-title))
              (description (org-ssg--config-get :description))
@@ -1366,7 +1404,7 @@ SITE-TITLE supplies the feed title."
 
 (defun org-ssg--generate-sitemap (posts output-dir)
   "Write sitemap.xml to OUTPUT-DIR generated from POSTS."
-  (condition-case-unless-debug err
+  (condition-case err
       (let* ((base-url (org-ssg--config-get :base-url))
              (output   (expand-file-name "sitemap.xml" output-dir))
              (urls     (mapconcat
@@ -1408,7 +1446,7 @@ cached version."
       (org-ssg--log :info "Build started")
       (org-ssg--log :info (format "Source: %s" source))
       (org-ssg--log :info (format "Output: %s" output))
-      (condition-case-unless-debug err
+      (condition-case err
 (let* ((posts (org-ssg--collect source output))
                    (org-ssg--global-tags-table (org-ssg--collect-tags posts)))
 
