@@ -88,20 +88,20 @@ Post content goes here. Full org-mode syntax supported.
 
 *** Frontmatter keywords
 
-| Keyword       | Description                                  | Example                       |
-|---------------+----------------------------------------------+-------------------------------|
-| =#+TITLE:=    | Page title                                   | =#+TITLE: My Post=            |
-| =#+DATE:=     | Publication date (yyyy-mm-dd)                | =#+DATE: 2026-05-28=          |
-| =#+TYPE:=     | Override the inferred folder type(s)         | =#+TYPE: page, special=       |
-| =#+TEMPLATE:= | Force a specific HTML template               | =#+TEMPLATE: landing-page=    |
-| =#+COMPACT:=  | Custom var often used for list layouts       | =#+COMPACT: t=                |
-| =#+TAGS:=     | Space/comma separated list of tags           | =#+TAGS: emacs lisp=          |
-| =#+EXCERPT:=  | A plain-text summary (fallback for blocks)   | =#+EXCERPT: A short read.=    |
-| =#+CSS:=      | Inject specific CSS into the document <head> | =#+CSS: /static/custom.css=   |
-| =#+JS:=       | Inject specific JS into the document <head>  | =#+JS: /static/script.js=     |
-| =#+COLLECTION:| Generate a manual index with AND-logic       | =#+COLLECTION: videos, inf=   |
-| =#+DRAFT:=    | Set to =t= to completely exclude from build  | =#+DRAFT: t=                  |
-| =#+LISTED:=   | Set to =nil= to hide from index listings     | =#+LISTED: nil=               |
+| Keyword         | Description                                  | Example                     |
+|-----------------+----------------------------------------------+-----------------------------|
+| =#+TITLE:=      | Page title                                   | =#+TITLE: My Post=          |
+| =#+DATE:=       | Publication date (yyyy-mm-dd)                | =#+DATE: 2026-05-28=        |
+| =#+TYPE:=       | Override the inferred folder type(s)         | =#+TYPE: page, special=     |
+| =#+TEMPLATE:=   | Force a specific HTML template               | =#+TEMPLATE: landing-page=  |
+| =#+COMPACT:=    | Custom var often used for list layouts       | =#+COMPACT: t=              |
+| =#+TAGS:=       | Space/comma separated list of tags           | =#+TAGS: emacs lisp=        |
+| =#+EXCERPT:=    | A plain-text summary (fallback for blocks)   | =#+EXCERPT: A short read.=  |
+| =#+CSS:=        | Inject specific CSS into the document <head> | =#+CSS: /static/custom.css= |
+| =#+JS:=         | Inject specific JS into the document <head>  | =#+JS: /static/script.js=   |
+| =#+COLLECTION:= | Generate a manual index with AND-logic       | =#+COLLECTION: videos, inf= |
+| =#+DRAFT:=      | Set to =t= to completely exclude from build  | =#+DRAFT: t=                |
+| =#+LISTED:=     | Set to =nil= to hide from index listings     | =#+LISTED: nil=             |
 
 *Note on Custom Keywords:* Any unrecognized keyword (like =#+MY_VAR: value=) is automatically extracted and passed to the template engine. You can render it via ={{my-var}}=.
 
