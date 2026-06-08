@@ -778,10 +778,11 @@ All global configuration variables are also available in the template."
   (let* ((title      (or (plist-get post :title) "Untitled"))
          (date       (or (plist-get post :date) ""))
          (tags       (plist-get post :tags))
+         (tags-html (org-ssg--tags-html tags))
          (url        (org-ssg--post-site-url post))
          (excerpt    (or (plist-get post :excerpt) ""))
          (base-vars  (list :title title :url url :date date
-                           :tags (if tags (string-join tags ", ") "")
+                           :tags (if tags (string-join tags ", ") "") :tags-html tags-html
                            :excerpt excerpt)))
     (append base-vars
             (cl-loop for (k v) on post by #'cddr
