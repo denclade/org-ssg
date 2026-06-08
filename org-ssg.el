@@ -592,26 +592,32 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
       (if hook (funcall hook base-post) base-post))))
 
 (defun org-ssg--collect (source-input output-dir)
-  "Return a list of post plists by scanning SOURCE-INPUTs for .org files recursively.
+  "Return a list of posts by scanning SOURCE-INPUTs for .org files recursively.
 OUTPUT-DIR is used to compute output paths.  Draft posts and files placed
 directly in SOURCE-DIR with no type subdirectory are skipped."
-  (let ((sources (if (listp source-input) source-input (list source-input)))
+(let ((sources (if (listp source-input) source-input (list source-input)))
         (collected nil))
     (dolist (src sources)
-      (setq collected
-            (append collected
-                    (delq nil
-                          (mapcar (lambda (f)
-                                    (let ((post (org-ssg--collect-content-file f src output-dir)))
-                                      (cond
-                                       ((plist-get post :draft)
-                                        (org-ssg--log :info (format "Skipping draft: %s" f))
-                                        nil)
-                                       ((null (plist-get post :type))
-                                        (org-ssg--log :warn (format "No type directory, skipping: %s" f))
-                                        nil)
-                                       (t post))))
-                                  (directory-files-recursively src "\\.org$"))))))
+      (let ((all-org-files (directory-files-recursively src "\\.org$")))
+        ;; remove emacs lockfiles
+        (setq all-org-files (seq-remove (lambda (f)
+                                          (string-prefix-p ".#" (file-name-nondirectory f)))
+                                        all-org-files))
+        
+        (setq collected
+              (append collected
+                      (delq nil
+                            (mapcar (lambda (f)
+                                      (let ((post (org-ssg--collect-content-file f src output-dir)))
+                                        (cond
+                                         ((plist-get post :draft)
+                                          (org-ssg--log :info (format "Skipping draft: %s" f))
+                                          nil)
+                                         ((null (plist-get post :type))
+                                          (org-ssg--warn (format "No type directory, skipping: %s" f))
+                                          nil)
+                                         (t post))))
+                                    all-org-files))))))
     collected))
 
 ;; Helper functions
@@ -696,7 +702,7 @@ Fall back to the default theme.  Logs an error and returns the original placehol
       (format "<!-- Template not found: %s.html -->" name))))
 
 (defun org-ssg--process-includes (template theme-dir)
-  "Replace {{include file.html}} directives in TEMPLATE with file contents.
+  "Replace {{#include file.html}} directives in TEMPLATE with file contents.
 Searches THEME-DIR fist, falls back to default-theme if not found.
 Logs an error and inserts an HTML comment if the file is missing.
 Returns a cons cell (RESULT . CHANGED-P)."
@@ -704,7 +710,7 @@ Returns a cons cell (RESULT . CHANGED-P)."
     (with-temp-buffer
       (insert template)
       (goto-char (point-min))
-      (while (re-search-forward "{{include[ \t]+\\([^} \t\n]+\\)[ \t]*}}" nil t)
+      (while (re-search-forward "{{#include[ \t]+\\([^} \t\n]+\\)[ \t]*}}" nil t)
         (setq changed t)
         (let* ((filename (match-string 1))
                (resolved (org-ssg--resolve-theme-file filename theme-dir)))
@@ -895,17 +901,15 @@ The template is looked up in THEME-DIR."
 
 (defun org-ssg--process-vars (template vars)
   "Replace {{var}}, {{var | filter}} with content from VARS, or {{\"Literal\" | filter}} in TEMPLATE."
-  (org-ssg--replace-in-template
+(org-ssg--replace-in-template
    template
-   "{{\\([^|}]+\\)\\(?:|[ \t]*\\([a-zA-Z0-9_-]+\\)[ \t]*\\)?}}"
+   "{{\\([^#|}][^|}]*\\)\\(?:|[ \t]*\\([a-zA-Z0-9_-]+\\)[ \t]*\\)?}}"
    (lambda ()
      (let* ((raw-var (string-trim (match-string 1)))
             (filter  (match-string 2))
             (val     (cond
                       ((string-match "\\`[\"']\\(.*\\)[\"']\\'" raw-var)
                        (match-string 1 raw-var))
-                      ((string-match-p " " raw-var)
-                       raw-var)
                       (t
                        (plist-get vars (intern (concat ":" raw-var))))))
             (val-str (if val (format "%s" val) "")))
