@@ -125,7 +125,8 @@ Debouncing is required as the OS sometimes fires 2-3 events per change."
 (defvar org-ssg-default-filters
   '(("date"     . (lambda (val) (format-time-string "%d. %B %Y" (org-ssg--parse-date val))))
     ("upcase"   . upcase)
-    ("downcase" . downcase))
+    ("downcase" . downcase)
+    ("obfuscate" . org-ssg--filter-obfuscate))
   "Alist of default template filters mapping string names to functions.")
 
 ;;; ============================================================================
@@ -371,6 +372,32 @@ PATH-RESOLVER is an optional function applied to the source path (e.g., for SCSS
   "Return a list of all subdirectories inside SOURCE-DIR recursively."
   (seq-filter #'file-directory-p
               (directory-files-recursively source-dir "" t)))
+
+;;; ============================================================================
+;;; Filters
+;;; ============================================================================
+
+(defun org-ssg--reverse-string (str)
+  "Reverse string STR.  e.g. 'Dennis' -> 'sinneD'."
+  (apply #'string (nreverse (string-to-list str))))
+
+(defun org-ssg--filter-obfuscate (val)
+  "Obfuscates VAL word-by-word with RTL text.
+Brackets are swapped before reversing to ensure correct readability."
+(let* ((words (split-string val " " t))
+         (swap-table '((?\( . ?\)) (?\) . ?\()
+                       (?\[ . ?\]) (?\] . ?\[)
+                       (?\{ . ?\}) (?\} . ?\{)))
+         (html-words (mapcar (lambda (w)
+                               (let* ((chars (string-to-list w))
+                                      (swapped (mapcar (lambda (c)
+                                                         (or (cdr (assoc c swap-table)) c))
+                                                       chars))
+                                      (reversed (nreverse swapped)))
+                                 (format "<span class=\"arev\">%s</span>" (apply #'string reversed))))
+                             words)))
+    (format "<span class=\"arev-row\" aria-hidden=\"true\">%s</span>"
+            (string-join html-words ""))))
 
 ;;; ============================================================================
 ;;; Org Parsing
@@ -867,15 +894,22 @@ The template is looked up in THEME-DIR."
       (cons (buffer-string) changed))))
 
 (defun org-ssg--process-vars (template vars)
-  "Replace {{var}} or {{var | filter}} from VARS in TEMPLATE."
+  "Replace {{var}}, {{var | filter}} with content from VARS, or {{\"Literal\" | filter}} in TEMPLATE."
   (org-ssg--replace-in-template
    template
-   "{{\\([a-zA-Z0-9_.-]+\\)\\(?:[ \t]*|[ \t]*\\([a-zA-Z0-9_-]+\\)\\)?}}"
+   "{{\\([^|}]+\\)\\(?:|[ \t]*\\([a-zA-Z0-9_-]+\\)[ \t]*\\)?}}"
    (lambda ()
-     (let* ((var-sym (intern (concat ":" (match-string 1))))
+     (let* ((raw-var (string-trim (match-string 1)))
             (filter  (match-string 2))
-            (val     (plist-get vars var-sym))
+            (val     (cond
+                      ((string-match "\\`[\"']\\(.*\\)[\"']\\'" raw-var)
+                       (match-string 1 raw-var))
+                      ((string-match-p " " raw-var)
+                       raw-var)
+                      (t
+                       (plist-get vars (intern (concat ":" raw-var))))))
             (val-str (if val (format "%s" val) "")))
+       
        (if (and filter (not (string-empty-p val-str)))
            (let* ((custom-filters (org-ssg--config-get :filters))
                   (filter-fn      (or (cdr (assoc filter custom-filters))
