@@ -569,15 +569,34 @@ SOURCE-DIR and OUTPUT-DIR are used to compute the output path and post type."
            (file-dir  (file-name-directory filepath))
 
            (local-res   (org-ssg--collect-assets-explicit-from-properties filepath
-                                                       (append (mapcar #'car css)
-                                                               (mapcar #'car js)
-                                                               extra-assets)))
+                                                                          (append (mapcar #'car css)
+                                                                                  (mapcar #'car js)
+                                                                                  extra-assets)))
            (assets    (append (org-ssg--collect-assets-implicit-from-ast ast filepath) local-res))
            
-           (relative (file-relative-name filepath source-dir))
-           (output   (expand-file-name
-                      (concat (file-name-sans-extension relative) ".html")
-                      output-dir))
+           (relative   (file-relative-name filepath source-dir))
+           (rel-dir    (file-name-directory relative))
+           (base-name  (file-name-base filepath))
+           (parent-dir (when rel-dir (file-name-nondirectory (directory-file-name rel-dir))))
+           
+           ;; Pretty URL
+           (output-rel (cond
+                        ;; index.org -> bleibt index.html
+                        ((string= (downcase base-name) "index")
+                         (concat (file-name-sans-extension relative) ".html"))
+                        
+                        ;; Same folder (e.g. hsl-farbhelfer/hsl-farbhelfer.org)
+                        ;; Do not duplicate foldernames
+                        ((and parent-dir (string= base-name parent-dir))
+                         (concat (file-name-as-directory rel-dir) "index.html"))
+                        
+                        ;; Just a file in a folder without a specific subfolder
+                        (t
+                         (concat (if rel-dir (file-name-as-directory rel-dir) "")
+                                 (file-name-as-directory base-name)
+                                 "index.html"))))
+           
+           (output     (expand-file-name output-rel output-dir))
            
            (custom-props (org-ssg--extract-custom-keywords ast))
            (base-post   (append (list :title title :date date :type type :draft draft :listed listed
@@ -973,13 +992,18 @@ Returns an empty string if ORG-STRING is nil."
       (insert org-string)
       (org-ssg--export-html-settings))))
 
+
 (defun org-ssg--post-site-url (post)
-  "Return the root-relative URL for POST.
+  "Return the root-relative URL for POST, stripping 'index.html' for pretty URLs.
 Variable output comes from e.g. `org-ssg--collect-content-file'
     (output   (expand-file-name ..."
-  (concat "/"
-          (file-relative-name (plist-get post :output)
-                              (org-ssg--config-get :output))))
+  (let* ((rel-path (file-relative-name (plist-get post :output)
+                                       (org-ssg--config-get :output)))
+         (url (concat "/" rel-path)))
+    ;; If url ends with index.html endet cut it for pretty urls
+    (if (string-suffix-p "index.html" url)
+        (substring url 0 (- (length "index.html")))
+      url)))
 
 (defun org-ssg--render-post (post)
   "Return the full HTML string for POST rendered with its type template."
