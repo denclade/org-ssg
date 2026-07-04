@@ -1189,18 +1189,19 @@ BASE-URL-PATH ensures links are root-relative (e.g., /videos/page-2.html)."
 
 (defun org-ssg--generate-virtual-indices (source-dir output-dir posts)
   "Generate virtual HTML index pages for subdirectories in SOURCE-DIR without an index.org.
+claimed-outputs contains output files from real posts, those are not used for index pages.
 Posts are filtered using an AND-logic on path segments."
   (let ((subdirs (org-ssg--get-sub-directories source-dir))
-        (virtual-indices nil))
+        (virtual-indices nil)
+        (claimed-outputs (mapcar (lambda (p) (plist-get p :output)) posts)))
     (cl-loop for subdir in subdirs
              do
              (let* ((relative (file-relative-name subdir source-dir))
                     (path-segments (split-string relative "/" t))
-                    (file-path (file-name-concat subdir "index.org"))
                     (out-dir (expand-file-name relative output-dir))
                     (out-file (expand-file-name "index.html" out-dir)))
                
-               (unless (file-exists-p file-path)
+               (unless (member out-file claimed-outputs)
                  (let ((filtered-posts
                         (org-ssg--sort-posts-by-date
                          (cl-remove-if-not
