@@ -1049,6 +1049,9 @@ Variable output comes from e.g. `org-ssg--collect-content-file'
          (all-vars  (append post-vars org-ssg--config))
          
          (inner     (org-ssg--render-recursive template all-vars theme-dir)))
+    ;; special case: seperate pages without menus, e.g. /embed extra-output
+    (if (plist-get post :no-base)
+        (org-ssg--inject-live-reload inner)
     (org-ssg--wrap-base inner title url
                         (list :extra-css css-html
                               :extra-js  js-html))))
@@ -1488,7 +1491,36 @@ SITE-TITLE supplies the feed title."
     (error (org-ssg--log :error (format "Failed to generate sitemap: %s"
                                         (error-message-string err))))))
 
+(defun org-ssg--generate-extra-outputs (posts)
+  "Generate alternative outputs/sub-pages based on the :extra-outputs config for POSTS.
+Rules are defined as plists: (:type \"videos\" :path \"embed\" :template \"videos-iframe\" :no-base t)"
+  (let ((extra-pages nil)
+        (rules (org-ssg--config-get :extra-outputs)))
+    (when rules
+      (dolist (post posts)
+        (let* ((raw-types (plist-get post :type))
+               (types (if (listp raw-types) raw-types (list raw-types))))
+          (dolist (rule rules)
 
+            (when (member (plist-get rule :type) types)
+              (let* ((orig-out (plist-get post :output))
+                     (sub-path (plist-get rule :path))
+                     ;;  .../orig-dir/sub-path/index.html
+                     (extra-out (expand-file-name (concat sub-path "/index.html") (file-name-directory orig-out)))
+                     (orig-url (plist-get post :url))
+                     ;; /original-url/sub-path/
+                     (extra-url (concat (string-trim-right orig-url "/") "/" sub-path "/"))
+                     (extra-post (copy-sequence post)))
+                
+                (setq extra-post (plist-put extra-post :output extra-out))
+                (setq extra-post (plist-put extra-post :url extra-url))
+                (setq extra-post (plist-put extra-post :template (plist-get rule :template)))
+                
+                (when (plist-get rule :no-base)
+                  (setq extra-post (plist-put extra-post :no-base t)))
+                
+                (push extra-post extra-pages)))))))
+    extra-pages))
 
 ;;; ============================================================================
 ;;; Build & deploy
@@ -1516,8 +1548,9 @@ cached version."
 
               (org-ssg--build-collections posts)
               
-              (let ((virtual-indices (org-ssg--generate-virtual-indices source output posts)))
-                (setq posts (append posts virtual-indices)))
+              (let ((virtual-indices (org-ssg--generate-virtual-indices source output posts))
+                    (extra-outputs (org-ssg--generate-extra-outputs posts)))
+                (setq posts (append posts virtual-indices extra-outputs)))
               
               (org-ssg--log :info (format "Collected %d post(s) (including virtual indices)." (length posts)))
             
