@@ -1054,7 +1054,7 @@ Variable output comes from e.g. `org-ssg--collect-content-file'
         (org-ssg--inject-live-reload inner)
     (org-ssg--wrap-base inner title url
                         (list :extra-css css-html
-                              :extra-js  js-html))))
+                              :extra-js  js-html)))))
 
 (defun org-ssg--write-post (post &optional force)
   "Render POST and write it to its output path ONLY if it's newer or FORCE is t."
